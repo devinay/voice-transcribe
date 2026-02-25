@@ -2,7 +2,7 @@
 """Voice recorder with local Whisper transcription.
 
 Usage:
-    python -m test_repo.voice          # run as module
+    python -m voice_transcribe.voice          # run as module
     voice                              # if installed via pyproject.toml scripts
 
 Controls:
@@ -11,8 +11,13 @@ Controls:
     Ctrl+C               → quit
 """
 
+import pathlib
 import queue
+import select
+import shutil
+import subprocess
 import sys
+import tempfile
 import threading
 import time
 
@@ -35,6 +40,9 @@ LIVE_CHUNK_SECONDS = 3  # how often to send audio to the transcription worker
 
 # Model sizes: tiny | base | small | medium | large
 DEFAULT_MODEL = "medium.en"
+
+TRANSCRIPT_DIR = pathlib.Path.home() / "transcript"
+IDLE_TIMEOUT = 300  # seconds of inactivity before auto-save and exit (5 minutes)
 
 
 # ---------------------------------------------------------------------------
@@ -78,33 +86,32 @@ _RESET = "\033[0m"
 _CLEAR = "\r" + " " * 40 + "\r"
 
 
-def record_and_transcribe_live(model: WhisperModel) -> tuple[str, np.ndarray]:
+def record_and_transcribe_live(model: WhisperModel) -> tuple[str | None, np.ndarray]:
     """Record audio with live transcription displayed as you speak.
 
-    Press SPACE to start, press SPACE again to stop.
+    Press SPACE to start, press any key to stop.
     Words appear on screen as each chunk is transcribed in the background.
-    Returns (transcript, full_audio).
+    Returns (transcript, full_audio), or (None, empty) if idle timeout is reached.
     """
     all_frames: list[np.ndarray] = []
     start_event = threading.Event()
     stop_event = threading.Event()
-    press_count = 0
 
     def on_press(key: keyboard.Key) -> bool | None:
-        nonlocal press_count
-        if key == keyboard.Key.space:
-            press_count += 1
-            if press_count == 1:
+        if not start_event.is_set():
+            if key == keyboard.Key.space:
                 start_event.set()
-            elif press_count == 2:
-                stop_event.set()
-                return False  # stops the listener
+        else:
+            stop_event.set()
+            return False  # stops the listener
 
     listener = keyboard.Listener(on_press=on_press)
     listener.start()
 
-    print("Press SPACE to start recording, press SPACE again to stop. Ctrl+C to quit.")
-    start_event.wait()
+    print("Press SPACE to start recording, press any key to stop. Ctrl+C to quit.")
+    if not start_event.wait(timeout=IDLE_TIMEOUT):
+        listener.stop()
+        return None, np.array([], dtype=np.float32)
     print(f"\n  {_RED}●{_RESET} ", end="", flush=True)
 
     # Background worker: transcribes chunks and prints words as they arrive
@@ -190,33 +197,108 @@ def summarise(summariser, text: str) -> str:
 
 
 # ---------------------------------------------------------------------------
-# Confirmation / editing
+# Claude-powered correction
+# ---------------------------------------------------------------------------
+
+def correct_with_claude(transcript: str, instructions: str) -> str:
+    """Apply spoken correction instructions to the transcript using the claude CLI."""
+    tmp = pathlib.Path(tempfile.mktemp(suffix=".md"))
+    tmp.write_text(transcript)
+    subprocess.run(
+        [
+            "claude", "-p",
+            f"Edit the file {tmp} — apply these correction instructions to the transcript "
+            f"text. Only the corrected transcript text should remain in the file, no "
+            f"commentary: {instructions}",
+            "--allowedTools", "Edit,Write,Read",
+        ],
+        check=True,
+    )
+    corrected = tmp.read_text().strip()
+    tmp.unlink()
+    return corrected
+
+
+def process_and_save(transcript: str) -> None:
+    """Process the final transcript with claude and save to ~/transcript/."""
+    TRANSCRIPT_DIR.mkdir(exist_ok=True)
+
+    tmp = pathlib.Path(tempfile.mktemp(suffix=".md"))
+    tmp.write_text(transcript)
+
+    print(f"\r{_RED}●{_RESET} PROCESSING...", end="", flush=True)
+
+    # Step 1: Have claude write the full structured markdown to the temp file
+    subprocess.run(
+        [
+            "claude", "-p",
+            f"Replace the entire contents of {tmp} with a structured markdown document "
+            f"based on the transcript currently in the file. Use exactly these sections:\n\n"
+            f"# [Title extracted from transcript]\n\n"
+            f"## Summary\n[2-3 sentence summary]\n\n"
+            f"## Transcript\n[original transcript, unchanged]\n\n"
+            f"## Processed Transcript\n[correct errors, apply punctuation, break into "
+            f"paragraphs where the topic changes]\n\n"
+            f"## Next Actions\n[bullet list of action items; leave blank if purely informational]",
+            "--allowedTools", "Edit,Write,Read",
+        ],
+        check=True,
+    )
+
+    # Step 2: Get the 5-word filename from claude (stdout only)
+    result = subprocess.run(
+        [
+            "claude", "-p",
+            f"Read the file {tmp} and output only a 5-word filename summary: "
+            f"lowercase words separated by underscores, no file extension, no punctuation, "
+            f"nothing else.",
+            "--allowedTools", "Read",
+        ],
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+
+    raw = result.stdout.strip().lower()
+    filename = "".join(c if c.isalnum() or c == "_" else "_" for c in raw)
+    filename = "_".join(w for w in filename.split("_") if w) + ".md"
+
+    print(_CLEAR, end="", flush=True)
+
+    dest = TRANSCRIPT_DIR / filename
+    shutil.move(str(tmp), dest)
+    print(f"\nSaved → {dest}")
+
+
+# ---------------------------------------------------------------------------
+# Review prompt
 # ---------------------------------------------------------------------------
 
 def prompt_review(transcript: str) -> tuple[str, str]:
     """Ask the user what to do with the transcript.
 
-    Returns (action, text) where action is 'proceed', 'edit', 'add', or 'exit'.
+    Returns (action, text) where action is 'proceed', 'add', 'correct', 'exit', or 'timeout'.
     """
     while True:
+        sys.stdout.write("  [P]roceed  /  [A]dd  /  [C]orrect  /  e[X]it ? ")
+        sys.stdout.flush()
+        ready, _, _ = select.select([sys.stdin], [], [], IDLE_TIMEOUT)
+        if not ready:
+            return "timeout", transcript
         try:
-            choice = input("  [P]roceed  /  [E]dit  /  [A]dd  /  e[X]it ? ").strip().lower()
+            choice = sys.stdin.readline().strip().lower()
         except EOFError:
             return "proceed", transcript
 
         if choice in ("p", ""):
             return "proceed", transcript
-        if choice == "e":
-            try:
-                edited = input("  Your edit: ").strip()
-            except EOFError:
-                return "proceed", transcript
-            return "edit", edited
         if choice == "a":
             return "add", transcript
+        if choice == "c":
+            return "correct", transcript
         if choice == "x":
             return "exit", transcript
-        print("  Please type 'p', 'e', 'a', or 'x'.")
+        print("  Please type 'p', 'a', 'c', or 'x'.")
 
 
 # ---------------------------------------------------------------------------
@@ -232,6 +314,10 @@ def main() -> None:
             print()
             transcript, _ = record_and_transcribe_live(model)
 
+            if transcript is None:
+                print("\nIdle timeout — no activity detected. Goodbye.")
+                sys.exit(0)
+
             if not transcript:
                 print("No speech detected — try again.\n")
                 continue
@@ -244,31 +330,50 @@ def main() -> None:
                 print(f"\nSummary:\n  {summary}\n")
                 print(f"Transcript:\n  {transcript}\n")
 
-                action, result = prompt_review(transcript)
+                action, _ = prompt_review(transcript)
+
+                if action == "timeout":
+                    print("\nIdle timeout — saving and exiting.")
+                    process_and_save(transcript)
+                    sys.exit(0)
+
+                if action == "proceed":
+                    process_and_save(transcript)
+                    break
 
                 if action == "exit":
+                    process_and_save(transcript)
                     print("\nGoodbye.")
                     sys.exit(0)
 
-                if action in ("proceed", "edit"):
-                    final = result
-                    break
+                if action == "correct":
+                    print()
+                    instructions, _ = record_and_transcribe_live(model)
+                    if not instructions:
+                        print("No instructions heard — try again.\n")
+                        continue
+                    _no_change_phrases = ("do nothing", "make no changes", "no changes", "never mind", "cancel")
+                    if any(p in instructions.lower() for p in _no_change_phrases):
+                        continue
+                    print(f"\r{_RED}●{_RESET} CORRECTING...", end="", flush=True)
+                    transcript = correct_with_claude(transcript, instructions)
+                    print(_CLEAR, end="", flush=True)
+                    print(f"\r{_RED}●{_RESET} SUMMARISING...", end="", flush=True)
+                    summary = summarise(summariser, transcript)
+                    print(_CLEAR, end="", flush=True)
+                    # Loop back — corrected transcript + summary will be shown at top
 
-                # action == "add": record another clip and append
-                print()
-                extra, _ = record_and_transcribe_live(model)
+                if action == "add":
+                    print()
+                    extra, _ = record_and_transcribe_live(model)
+                    if not extra:
+                        print("No speech detected — try again.\n")
+                        continue
+                    transcript = transcript + " " + extra
+                    print(f"\r{_RED}●{_RESET} SUMMARISING...", end="", flush=True)
+                    summary = summarise(summariser, transcript)
+                    print(_CLEAR, end="", flush=True)
 
-                if not extra:
-                    print("No speech detected — try again.\n")
-                    continue
-
-                transcript = transcript + " " + extra
-
-                print(f"\r{_RED}●{_RESET} SUMMARISING...", end="", flush=True)
-                summary = summarise(summariser, transcript)
-                print(_CLEAR, end="", flush=True)
-
-            print(f"\nFinal text:\n  {final}\n")
             print("-" * 40)
 
     except KeyboardInterrupt:
