@@ -11,21 +11,28 @@ Controls:
     Ctrl+C               → quit
 """
 
+import difflib
+import os
+import argparse
 import pathlib
 import queue
 import select
 import shutil
+import signal
 import subprocess
 import sys
 import tempfile
+import termios
 import threading
 import time
+import tty
+import wave
+from collections.abc import Callable
 
 import numpy as np
 import sounddevice as sd
 import torch
 from faster_whisper import WhisperModel
-from pynput import keyboard
 from transformers import AutoModelForSeq2SeqLM, AutoTokenizer
 
 # ---------------------------------------------------------------------------
@@ -36,14 +43,18 @@ SAMPLE_RATE = 16000   # Hz — Whisper is trained on 16 kHz audio
 CHANNELS = 1
 DTYPE = "float32"
 CHUNK_FRAMES = 512    # frames per read call (~32 ms at 16 kHz)
-LIVE_CHUNK_SECONDS = 3  # how often to send audio to the transcription worker
+LIVE_CHUNK_SECONDS = 5  # how often to send audio to the transcription worker
 
 # Model sizes: tiny | base | small | medium | large
 DEFAULT_MODEL = "medium.en"
+DEFAULT_MLX_MODEL = "mlx-community/whisper-small.en-mlx"
 
 TRANSCRIPT_DIR = pathlib.Path.home() / "transcript"
 IDLE_TIMEOUT = 300  # seconds of inactivity before auto-save and exit (5 minutes)
 
+PROCESS_PROMPT_FILE = pathlib.Path(__file__).parent / "process_prompt.md"
+DEFAULT_LLM_BACKEND = "claude"
+DEFAULT_OLLAMA_MODEL = "qwen2.5:7b-instruct"
 
 # ---------------------------------------------------------------------------
 # Model loading
@@ -64,29 +75,114 @@ def load_summariser():
     return model, tokenizer
 
 
-def load_model(size: str = DEFAULT_MODEL) -> WhisperModel:
+def write_wav(path: pathlib.Path, audio: np.ndarray) -> None:
+    clipped = np.clip(audio, -1.0, 1.0)
+    pcm = (clipped * 32767.0).astype(np.int16)
+    with wave.open(str(path), "wb") as wf:
+        wf.setnchannels(CHANNELS)
+        wf.setsampwidth(2)
+        wf.setframerate(SAMPLE_RATE)
+        wf.writeframes(pcm.tobytes())
+
+
+def load_transcriber(
+    stt_backend: str, faster_model_size: str = DEFAULT_MODEL, mlx_model_id: str = DEFAULT_MLX_MODEL
+) -> Callable[[np.ndarray], list[str]]:
+    if stt_backend == "mlx-whisper":
+        try:
+            import mlx_whisper
+        except ImportError as exc:
+            raise RuntimeError(
+                "mlx-whisper backend selected but package is not installed. "
+                "Install it with: uv pip install mlx-whisper"
+            ) from exc
+
+        mps_available = torch.backends.mps.is_available()
+        print(
+            f"Loading mlx-whisper model '{mlx_model_id}' on {'mps' if mps_available else 'cpu'} "
+            "(first run may download weights) ...",
+            flush=True,
+        )
+
+        def transcribe_chunk(audio_chunk: np.ndarray) -> list[str]:
+            tmp_wav = pathlib.Path(tempfile.mktemp(suffix=".wav"))
+            write_wav(tmp_wav, audio_chunk)
+            try:
+                result = mlx_whisper.transcribe(str(tmp_wav), path_or_hf_repo=mlx_model_id)
+            finally:
+                tmp_wav.unlink(missing_ok=True)
+            text = result.get("text", "").strip() if isinstance(result, dict) else str(result).strip()
+            return [text] if text else []
+
+        print("mlx-whisper transcriber ready.\n", flush=True)
+        return transcribe_chunk
+
     device = "cuda" if torch.cuda.is_available() else "cpu"
     compute_type = "float16" if device == "cuda" else "int8"
     print(
-        f"Loading Whisper '{size}' model on {device} "
+        f"Loading faster-whisper '{faster_model_size}' model on {device} "
         "(first run will download the weights) ...",
         flush=True,
     )
-    model = WhisperModel(size, device=device, compute_type=compute_type)
-    print("Model ready.\n", flush=True)
-    return model
+    model = WhisperModel(faster_model_size, device=device, compute_type=compute_type)
+    print("faster-whisper model ready.\n", flush=True)
+
+    def transcribe_chunk(audio_chunk: np.ndarray) -> list[str]:
+        segs, _ = model.transcribe(
+            audio_chunk,
+            vad_filter=True,
+            vad_parameters={"threshold": 0.5},
+            no_speech_threshold=0.6,
+            temperature=0.0,
+            compression_ratio_threshold=2.4,
+            log_prob_threshold=-1.0,
+            condition_on_previous_text=False,
+        )
+        texts = []
+        for seg in segs:
+            text = seg.text.strip()
+            if text:
+                texts.append(text)
+        return texts
+
+    return transcribe_chunk
 
 
 # ---------------------------------------------------------------------------
 # Recording + live transcription
 # ---------------------------------------------------------------------------
 
-_RED   = "\033[31m"
-_RESET = "\033[0m"
-_CLEAR = "\r" + " " * 40 + "\r"
+_RED        = "\033[31m"
+_STRIKE_RED = "\033[31m\033[9m"
+_GREEN      = "\033[32m"
+_RESET      = "\033[0m"
+_CLEAR      = "\r" + " " * 40 + "\r"
 
 
-def record_and_transcribe_live(model: WhisperModel) -> tuple[str | None, np.ndarray]:
+def clear_screen() -> None:
+    print("\033[2J\033[H", end="", flush=True)
+
+
+def highlight_diff(before: str, after: str) -> str:
+    """Return after text with removed words in red strikethrough and added words in green."""
+    before_words = before.split()
+    after_words = after.split()
+    matcher = difflib.SequenceMatcher(None, before_words, after_words)
+    result = []
+    for op, i1, i2, j1, j2 in matcher.get_opcodes():
+        if op == "equal":
+            result.append(" ".join(after_words[j1:j2]))
+        elif op == "replace":
+            result.append(f"{_STRIKE_RED}{' '.join(before_words[i1:i2])}{_RESET}")
+            result.append(f"{_GREEN}{' '.join(after_words[j1:j2])}{_RESET}")
+        elif op == "delete":
+            result.append(f"{_STRIKE_RED}{' '.join(before_words[i1:i2])}{_RESET}")
+        elif op == "insert":
+            result.append(f"{_GREEN}{' '.join(after_words[j1:j2])}{_RESET}")
+    return " ".join(result)
+
+
+def record_and_transcribe_live(transcribe_chunk_fn: Callable[[np.ndarray], list[str]]) -> tuple[str | None, np.ndarray]:
     """Record audio with live transcription displayed as you speak.
 
     Press SPACE to start, press any key to stop.
@@ -97,20 +193,48 @@ def record_and_transcribe_live(model: WhisperModel) -> tuple[str | None, np.ndar
     start_event = threading.Event()
     stop_event = threading.Event()
 
-    def on_press(key: keyboard.Key) -> bool | None:
-        if not start_event.is_set():
-            if key == keyboard.Key.space:
-                start_event.set()
-        else:
-            stop_event.set()
-            return False  # stops the listener
+    def _key_listener() -> None:
+        """Read keypresses via raw terminal stdin. No pynput needed."""
+        fd = sys.stdin.fileno()
+        old = termios.tcgetattr(fd)
+        try:
+            tty.setcbreak(fd)
+            # Phase 1: wait for SPACE to start
+            while True:
+                ready, _, _ = select.select([sys.stdin], [], [], 0.5)
+                if stop_event.is_set():
+                    return  # idle timeout fired externally
+                if ready:
+                    ch = sys.stdin.buffer.read(1)
+                    if ch == b'\x03':  # Ctrl+C
+                        os.kill(os.getpid(), signal.SIGINT)
+                        return
+                    if ch == b' ':
+                        start_event.set()
+                        break
+            # Phase 2: wait for any key to stop
+            while True:
+                ready, _, _ = select.select([sys.stdin], [], [], 0.5)
+                if stop_event.is_set():
+                    return
+                if ready:
+                    ch = sys.stdin.buffer.read(1)
+                    if ch == b'\x03':  # Ctrl+C
+                        os.kill(os.getpid(), signal.SIGINT)
+                        return
+                    print("\n[debug] stop key detected; signaling stop_event.", flush=True)
+                    stop_event.set()
+                    return
+        finally:
+            termios.tcsetattr(fd, termios.TCSADRAIN, old)
 
-    listener = keyboard.Listener(on_press=on_press)
-    listener.start()
+    key_thread = threading.Thread(target=_key_listener, daemon=True)
+    key_thread.start()
 
     print("Press SPACE to start recording, press any key to stop. Ctrl+C to quit.")
     if not start_event.wait(timeout=IDLE_TIMEOUT):
-        listener.stop()
+        stop_event.set()  # signal key_thread to exit
+        key_thread.join(timeout=1.0)
         return None, np.array([], dtype=np.float32)
     print(f"\n  {_RED}●{_RESET} ", end="", flush=True)
 
@@ -128,9 +252,11 @@ def record_and_transcribe_live(model: WhisperModel) -> tuple[str | None, np.ndar
                 break
             t0w = time.perf_counter()
             t0c = time.process_time()
-            segments, _ = model.transcribe(audio_chunk, vad_filter=True)
-            for seg in segments:
-                text = seg.text.strip()
+            rms = float(np.sqrt(np.mean(audio_chunk ** 2)))
+            if rms < 0.005:
+                tx_queue.task_done()
+                continue
+            for text in transcribe_chunk_fn(audio_chunk):
                 if text:
                     transcript_parts.append(text)
                     print(text + " ", end="", flush=True)
@@ -144,29 +270,42 @@ def record_and_transcribe_live(model: WhisperModel) -> tuple[str | None, np.ndar
     CHUNK_SAMPLES = int(LIVE_CHUNK_SECONDS * SAMPLE_RATE)
     pending: list[np.ndarray] = []
     pending_samples = 0
+
+    # Callback runs in sounddevice's thread — keeps main thread free for signals
+    def audio_callback(indata: np.ndarray, frames: int, time_info, status) -> None:
+        nonlocal pending, pending_samples
+        chunk = indata.copy()
+        all_frames.append(chunk)
+        pending.append(chunk)
+        pending_samples += len(chunk)
+        if pending_samples >= CHUNK_SAMPLES:
+            tx_queue.put(np.concatenate(pending).flatten())
+            pending.clear()
+            pending_samples = 0
+
     t0_record = time.perf_counter()
 
-    with sd.InputStream(samplerate=SAMPLE_RATE, channels=CHANNELS, dtype=DTYPE) as stream:
+    with sd.InputStream(
+        samplerate=SAMPLE_RATE, channels=CHANNELS, dtype=DTYPE,
+        blocksize=CHUNK_FRAMES, callback=audio_callback,
+    ):
         while not stop_event.is_set():
-            chunk, _ = stream.read(CHUNK_FRAMES)
-            all_frames.append(chunk.copy())
-            pending.append(chunk.copy())
-            pending_samples += len(chunk)
-            if pending_samples >= CHUNK_SAMPLES:
-                tx_queue.put(np.concatenate(pending).flatten())
-                pending = []
-                pending_samples = 0
+            time.sleep(0.05)  # main thread stays free — Ctrl+C and key events work
 
     record_dur = time.perf_counter() - t0_record
 
     # Flush any audio that didn't fill a full chunk
     if pending:
+        print(
+            f"\n[debug] final flush enqueue: {pending_samples} pending samples queued for transcription.",
+            flush=True,
+        )
         tx_queue.put(np.concatenate(pending).flatten())
 
     # Signal worker to stop and wait for remaining transcription to finish
     tx_queue.put(None)
     tx_thread.join()
-    listener.join()
+    key_thread.join(timeout=1.0)
 
     full_audio = (
         np.concatenate(all_frames).flatten() if all_frames
@@ -197,11 +336,54 @@ def summarise(summariser, text: str) -> str:
 
 
 # ---------------------------------------------------------------------------
-# Claude-powered correction
+# LLM-powered correction and processing
 # ---------------------------------------------------------------------------
 
-def correct_with_claude(transcript: str, instructions: str) -> str:
-    """Apply spoken correction instructions to the transcript using the claude CLI."""
+def run_ollama_prompt(prompt: str, model: str) -> str:
+    """Run an Ollama prompt and return stdout."""
+    result = subprocess.run(
+        ["ollama", "run", model, prompt],
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+    return result.stdout.strip()
+
+
+def run_claude_prompt(prompt: str) -> str:
+    """Run a Claude prompt and return stdout."""
+    result = subprocess.run(
+        ["claude", "-p", prompt],
+        capture_output=True,
+        text=True,
+        check=True,
+        stderr=subprocess.DEVNULL,
+    )
+    return result.stdout.strip()
+
+
+def run_llm_prompt(prompt: str, llm_backend: str, ollama_model: str) -> str:
+    """Run prompt with selected backend and return stdout."""
+    if llm_backend == "ollama":
+        return run_ollama_prompt(prompt, ollama_model)
+    return run_claude_prompt(prompt)
+
+
+def correct_with_llm(
+    transcript: str, instructions: str, llm_backend: str, ollama_model: str
+) -> str:
+    """Apply spoken correction instructions to the transcript using the selected LLM backend."""
+    if llm_backend == "ollama":
+        prompt = (
+            "You are editing a transcript.\n"
+            "Apply the user's correction instructions to the transcript text.\n"
+            "Return only the corrected transcript text, with no commentary.\n\n"
+            f"Correction instructions:\n{instructions}\n\n"
+            f"Transcript:\n{transcript}\n"
+        )
+        return run_ollama_prompt(prompt, ollama_model)
+
+    # Default: claude CLI path
     tmp = pathlib.Path(tempfile.mktemp(suffix=".md"))
     tmp.write_text(transcript)
     subprocess.run(
@@ -213,60 +395,43 @@ def correct_with_claude(transcript: str, instructions: str) -> str:
             "--allowedTools", "Edit,Write,Read",
         ],
         check=True,
+        stderr=subprocess.DEVNULL,
     )
     corrected = tmp.read_text().strip()
     tmp.unlink()
     return corrected
 
 
-def process_and_save(transcript: str) -> None:
-    """Process the final transcript with claude and save to ~/transcript/."""
+def process_and_save(transcript: str, llm_backend: str, ollama_model: str) -> None:
+    """Process the final transcript with the selected LLM backend and save to ~/transcript/."""
     TRANSCRIPT_DIR.mkdir(exist_ok=True)
 
-    tmp = pathlib.Path(tempfile.mktemp(suffix=".md"))
-    tmp.write_text(transcript)
+    timestamp = time.strftime("%Y%m%d_%H%M%S")
+    tmp = pathlib.Path(f".rec.tmp.{timestamp}.md")
+    print(f"\n  (working file: {tmp})")
 
     print(f"\r{_RED}●{_RESET} PROCESSING...", end="", flush=True)
 
-    # Step 1: Have claude write the full structured markdown to the temp file
-    subprocess.run(
-        [
-            "claude", "-p",
-            f"Replace the entire contents of {tmp} with a structured markdown document "
-            f"based on the transcript currently in the file. Use exactly these sections:\n\n"
-            f"# [Title extracted from transcript]\n\n"
-            f"## Summary\n[2-3 sentence summary]\n\n"
-            f"## Transcript\n[original transcript, unchanged]\n\n"
-            f"## Processed Transcript\n[correct errors, apply punctuation, break into "
-            f"paragraphs where the topic changes]\n\n"
-            f"## Next Actions\n[bullet list of action items; leave blank if purely informational]",
-            "--allowedTools", "Edit,Write,Read",
-        ],
-        check=True,
-    )
+    # Step 1: build structured markdown using shared prompt file
+    process_prompt = PROCESS_PROMPT_FILE.read_text().replace("{transcript}", transcript)
+    processed = run_llm_prompt(process_prompt, llm_backend, ollama_model)
+    tmp.write_text(processed)
 
-    # Step 2: Get the 5-word filename from claude (stdout only)
-    result = subprocess.run(
-        [
-            "claude", "-p",
-            f"Read the file {tmp} and output only a 5-word filename summary: "
-            f"lowercase words separated by underscores, no file extension, no punctuation, "
-            f"nothing else.",
-            "--allowedTools", "Read",
-        ],
-        capture_output=True,
-        text=True,
-        check=True,
+    # Step 2: get a 5-word filename summary from selected backend
+    filename_prompt = (
+        "Output only a 5-word filename summary for the text below: "
+        "lowercase words separated by underscores, no file extension, no punctuation, nothing else.\n\n"
+        f"{processed}\n"
     )
+    raw = run_llm_prompt(filename_prompt, llm_backend, ollama_model).lower()
 
-    raw = result.stdout.strip().lower()
     filename = "".join(c if c.isalnum() or c == "_" else "_" for c in raw)
     filename = "_".join(w for w in filename.split("_") if w) + ".md"
 
     print(_CLEAR, end="", flush=True)
 
     dest = TRANSCRIPT_DIR / filename
-    shutil.move(str(tmp), dest)
+    shutil.move(str(tmp), dest)  # only removes tmp on success
     print(f"\nSaved → {dest}")
 
 
@@ -275,12 +440,12 @@ def process_and_save(transcript: str) -> None:
 # ---------------------------------------------------------------------------
 
 def prompt_review(transcript: str) -> tuple[str, str]:
-    """Ask the user what to do with the transcript.
+    """Ask the user what to do with the current transcript chunk.
 
-    Returns (action, text) where action is 'proceed', 'add', 'correct', 'exit', or 'timeout'.
+    Returns (action, text) where action is 'add', 'correct', 'exit', or 'timeout'.
     """
     while True:
-        sys.stdout.write("  [P]roceed  /  [A]dd  /  [C]orrect  /  e[X]it ? ")
+        sys.stdout.write("  [A]dd  /  [C]orrect  /  e[X]it ? ")
         sys.stdout.flush()
         ready, _, _ = select.select([sys.stdin], [], [], IDLE_TIMEOUT)
         if not ready:
@@ -288,67 +453,166 @@ def prompt_review(transcript: str) -> tuple[str, str]:
         try:
             choice = sys.stdin.readline().strip().lower()
         except EOFError:
-            return "proceed", transcript
+            return "exit", transcript
 
-        if choice in ("p", ""):
-            return "proceed", transcript
         if choice == "a":
             return "add", transcript
         if choice == "c":
             return "correct", transcript
         if choice == "x":
             return "exit", transcript
-        print("  Please type 'p', 'a', 'c', or 'x'.")
+        print("  Please type 'a', 'c', or 'x'.")
 
 
 # ---------------------------------------------------------------------------
 # Main loop
 # ---------------------------------------------------------------------------
 
+def parse_args() -> argparse.Namespace:
+    env_backend = os.getenv("VOICE_LLM_BACKEND", DEFAULT_LLM_BACKEND).lower()
+    if env_backend not in {"claude", "ollama"}:
+        env_backend = DEFAULT_LLM_BACKEND
+    env_correction_backend = os.getenv("VOICE_CORRECTION_BACKEND", env_backend).lower()
+    if env_correction_backend not in {"claude", "ollama"}:
+        env_correction_backend = env_backend
+    env_process_backend = os.getenv("VOICE_PROCESS_BACKEND", env_backend).lower()
+    if env_process_backend not in {"claude", "ollama"}:
+        env_process_backend = env_backend
+
+    env_ollama_model = os.getenv("VOICE_OLLAMA_MODEL", DEFAULT_OLLAMA_MODEL)
+    env_correction_model = os.getenv("VOICE_CORRECTION_OLLAMA_MODEL", env_ollama_model)
+    env_process_model = os.getenv("VOICE_PROCESS_OLLAMA_MODEL", env_ollama_model)
+
+    parser = argparse.ArgumentParser()
+    parser.add_argument(
+        "--stt-backend",
+        choices=["faster-whisper", "mlx-whisper"],
+        default=os.getenv("VOICE_STT_BACKEND", "faster-whisper"),
+        help="Speech-to-text backend.",
+    )
+    parser.add_argument(
+        "--whisper-model",
+        default=os.getenv("VOICE_WHISPER_MODEL", DEFAULT_MODEL),
+        help="faster-whisper model size to use when --stt-backend=faster-whisper.",
+    )
+    parser.add_argument(
+        "--mlx-model",
+        default=os.getenv("VOICE_MLX_MODEL", DEFAULT_MLX_MODEL),
+        help="mlx-whisper model id to use when --stt-backend=mlx-whisper.",
+    )
+    parser.add_argument(
+        "--correction-backend",
+        choices=["claude", "ollama"],
+        default=env_correction_backend,
+        help="LLM backend for correction.",
+    )
+    parser.add_argument(
+        "--process-backend",
+        choices=["claude", "ollama"],
+        default=env_process_backend,
+        help="LLM backend for final processing/saving.",
+    )
+    parser.add_argument(
+        "--correction-ollama-model",
+        default=env_correction_model,
+        help="Ollama model to use when --correction-backend=ollama.",
+    )
+    parser.add_argument(
+        "--process-ollama-model",
+        default=env_process_model,
+        help="Ollama model to use when --process-backend=ollama.",
+    )
+    return parser.parse_args()
+
+
 def main() -> None:
-    summariser = load_summariser()
-    model = load_model()
+    # sys.stderr = open(os.devnull, "w")  # uncomment once stable
+    args = parse_args()
+
+    transcribe_chunk_fn = load_transcriber(
+        stt_backend=args.stt_backend,
+        faster_model_size=args.whisper_model,
+        mlx_model_id=args.mlx_model,
+    )
+    clear_screen()
+    print(f"STT backend: {args.stt_backend}", flush=True)
+    if args.stt_backend == "faster-whisper":
+        print(f"Whisper model: {args.whisper_model}", flush=True)
+    else:
+        print(f"MLX model: {args.mlx_model}", flush=True)
+    print(f"Correction backend: {args.correction_backend}", flush=True)
+    if args.correction_backend == "ollama":
+        print(f"Correction model: {args.correction_ollama_model}", flush=True)
+    print(f"Process backend: {args.process_backend}", flush=True)
+    if args.process_backend == "ollama":
+        print(f"Process model: {args.process_ollama_model}", flush=True)
+
+    tmp_file = pathlib.Path(tempfile.mktemp(suffix=".txt"))
+
+    def append_chunk(text: str) -> None:
+        with open(tmp_file, "a") as f:
+            f.write(text + "\n\n")
+
+    def show_accumulated() -> None:
+        if tmp_file.exists() and tmp_file.stat().st_size > 0:
+            print(tmp_file.read_text())
+            print("-" * 40)
+
+    def finalize() -> None:
+        if tmp_file.exists() and tmp_file.stat().st_size > 0:
+            process_and_save(
+                tmp_file.read_text(),
+                args.process_backend,
+                args.process_ollama_model,
+            )
+            tmp_file.unlink(missing_ok=True)
 
     try:
         while True:
+            clear_screen()
+            show_accumulated()
             print()
-            transcript, _ = record_and_transcribe_live(model)
+
+            transcript, _ = record_and_transcribe_live(transcribe_chunk_fn)
 
             if transcript is None:
-                print("\nIdle timeout — no activity detected. Goodbye.")
+                print("\nIdle timeout.")
+                finalize()
                 sys.exit(0)
 
             if not transcript:
                 print("No speech detected — try again.\n")
                 continue
 
-            print(f"\r{_RED}●{_RESET} SUMMARISING...", end="", flush=True)
-            summary = summarise(summariser, transcript)
-            print(_CLEAR, end="", flush=True)
+            current = transcript
+            display = transcript
 
             while True:
-                print(f"\nSummary:\n  {summary}\n")
-                print(f"Transcript:\n  {transcript}\n")
+                clear_screen()
+                show_accumulated()
+                print(f"Current:\n\n  {display}\n")
 
-                action, _ = prompt_review(transcript)
+                action, _ = prompt_review(current)
 
                 if action == "timeout":
+                    append_chunk(current)
                     print("\nIdle timeout — saving and exiting.")
-                    process_and_save(transcript)
+                    finalize()
                     sys.exit(0)
 
-                if action == "proceed":
-                    process_and_save(transcript)
-                    break
-
                 if action == "exit":
-                    process_and_save(transcript)
+                    append_chunk(current)
+                    finalize()
                     print("\nGoodbye.")
                     sys.exit(0)
 
+                if action == "add":
+                    append_chunk(current)
+                    break  # outer loop: show accumulated → record next chunk
+
                 if action == "correct":
                     print()
-                    instructions, _ = record_and_transcribe_live(model)
+                    instructions, _ = record_and_transcribe_live(transcribe_chunk_fn)
                     if not instructions:
                         print("No instructions heard — try again.\n")
                         continue
@@ -356,27 +620,22 @@ def main() -> None:
                     if any(p in instructions.lower() for p in _no_change_phrases):
                         continue
                     print(f"\r{_RED}●{_RESET} CORRECTING...", end="", flush=True)
-                    transcript = correct_with_claude(transcript, instructions)
+                    corrected = correct_with_llm(
+                        current,
+                        instructions,
+                        args.correction_backend,
+                        args.correction_ollama_model,
+                    )
+                    display = highlight_diff(current, corrected)
+                    current = corrected
                     print(_CLEAR, end="", flush=True)
-                    print(f"\r{_RED}●{_RESET} SUMMARISING...", end="", flush=True)
-                    summary = summarise(summariser, transcript)
-                    print(_CLEAR, end="", flush=True)
-                    # Loop back — corrected transcript + summary will be shown at top
-
-                if action == "add":
-                    print()
-                    extra, _ = record_and_transcribe_live(model)
-                    if not extra:
-                        print("No speech detected — try again.\n")
-                        continue
-                    transcript = transcript + " " + extra
-                    print(f"\r{_RED}●{_RESET} SUMMARISING...", end="", flush=True)
-                    summary = summarise(summariser, transcript)
-                    print(_CLEAR, end="", flush=True)
-
-            print("-" * 40)
 
     except KeyboardInterrupt:
+        if tmp_file.exists() and tmp_file.stat().st_size > 0:
+            try:
+                finalize()
+            except Exception:
+                pass
         print("\nGoodbye.")
         sys.exit(0)
 
