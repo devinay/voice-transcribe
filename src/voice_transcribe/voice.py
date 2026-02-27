@@ -43,7 +43,10 @@ SAMPLE_RATE = 16000   # Hz — Whisper is trained on 16 kHz audio
 CHANNELS = 1
 DTYPE = "float32"
 CHUNK_FRAMES = 512    # frames per read call (~32 ms at 16 kHz)
-LIVE_CHUNK_SECONDS = 5  # how often to send audio to the transcription worker
+STREAM_DECODE_SECONDS = 1.0
+STREAM_WINDOW_SECONDS = 5.0
+STREAM_BUFFER_SECONDS = 12.0
+MIN_STREAM_AUDIO_SECONDS = 0.8
 
 # Model sizes: tiny | base | small | medium | large
 DEFAULT_MODEL = "medium.en"
@@ -182,11 +185,15 @@ def highlight_diff(before: str, after: str) -> str:
     return " ".join(result)
 
 
+def _norm_token(token: str) -> str:
+    return "".join(ch for ch in token.lower() if ch.isalnum())
+
+
 def record_and_transcribe_live(transcribe_chunk_fn: Callable[[np.ndarray], list[str]]) -> tuple[str | None, np.ndarray]:
     """Record audio with live transcription displayed as you speak.
 
     Press SPACE to start, press any key to stop.
-    Words appear on screen as each chunk is transcribed in the background.
+    Words appear on screen continuously as audio streams to a background worker.
     Returns (transcript, full_audio), or (None, empty) if idle timeout is reached.
     """
     all_frames: list[np.ndarray] = []
@@ -194,7 +201,7 @@ def record_and_transcribe_live(transcribe_chunk_fn: Callable[[np.ndarray], list[
     stop_event = threading.Event()
 
     def _key_listener() -> None:
-        """Read keypresses via raw terminal stdin. No pynput needed."""
+        """Read keypresses via cbreak terminal stdin. No pynput needed."""
         fd = sys.stdin.fileno()
         old = termios.tcgetattr(fd)
         try:
@@ -222,7 +229,6 @@ def record_and_transcribe_live(transcribe_chunk_fn: Callable[[np.ndarray], list[
                     if ch == b'\x03':  # Ctrl+C
                         os.kill(os.getpid(), signal.SIGINT)
                         return
-                    print("\n[debug] stop key detected; signaling stop_event.", flush=True)
                     stop_event.set()
                     return
         finally:
@@ -238,50 +244,117 @@ def record_and_transcribe_live(transcribe_chunk_fn: Callable[[np.ndarray], list[
         return None, np.array([], dtype=np.float32)
     print(f"\n  {_RED}●{_RESET} ", end="", flush=True)
 
-    # Background worker: transcribes chunks and prints words as they arrive
+    # Background worker: consumes audio frames and performs streaming decode
     tx_queue: queue.Queue = queue.Queue()
-    transcript_parts: list[str] = []
+    transcript_words: list[str] = []
     total_tx_wall = 0.0
     total_tx_cpu = 0.0
 
+    def _tail_audio(frames: list[np.ndarray], total_samples: int, target_samples: int) -> np.ndarray:
+        if not frames:
+            return np.array([], dtype=np.float32)
+        if total_samples <= target_samples:
+            return np.concatenate(frames).flatten()
+        need = target_samples
+        selected: list[np.ndarray] = []
+        for frame in reversed(frames):
+            frame_len = len(frame)
+            if frame_len <= need:
+                selected.append(frame)
+                need -= frame_len
+            else:
+                selected.append(frame[-need:])
+                need = 0
+            if need == 0:
+                break
+        selected.reverse()
+        return np.concatenate(selected).flatten()
+
+    def _new_words_from_overlap(prev_words: list[str], curr_words: list[str]) -> list[str]:
+        if not prev_words:
+            return curr_words
+        prev_norm = [_norm_token(w) for w in prev_words]
+        curr_norm = [_norm_token(w) for w in curr_words]
+
+        max_overlap = min(len(prev_norm), len(curr_norm))
+        for k in range(max_overlap, 0, -1):
+            if prev_norm[-k:] == curr_norm[:k]:
+                return curr_words[k:]
+
+        # Fuzzy fallback: anchor on the latest matching block and append only new tail words.
+        matcher = difflib.SequenceMatcher(None, prev_norm, curr_norm, autojunk=False)
+        blocks = [b for b in matcher.get_matching_blocks() if b.size > 0]
+        if not blocks:
+            return []
+        block = max(blocks, key=lambda b: (b.a + b.size, b.size))
+        end_in_curr = block.b + block.size
+        if end_in_curr >= len(curr_words):
+            return []
+        return curr_words[end_in_curr:]
+
     def transcription_worker() -> None:
         nonlocal total_tx_wall, total_tx_cpu
-        while True:
-            audio_chunk = tx_queue.get()
-            if audio_chunk is None:
-                break
+        rolling_frames: list[np.ndarray] = []
+        rolling_samples = 0
+        samples_since_decode = 0
+        prev_window_words: list[str] = []
+        decode_every_samples = int(STREAM_DECODE_SECONDS * SAMPLE_RATE)
+        decode_window_samples = int(STREAM_WINDOW_SECONDS * SAMPLE_RATE)
+        max_buffer_samples = int(STREAM_BUFFER_SECONDS * SAMPLE_RATE)
+        min_decode_samples = int(MIN_STREAM_AUDIO_SECONDS * SAMPLE_RATE)
+
+        def _decode_once() -> None:
+            nonlocal total_tx_wall, total_tx_cpu, prev_window_words
+            if rolling_samples < min_decode_samples:
+                return
+            audio_window = _tail_audio(rolling_frames, rolling_samples, decode_window_samples)
+            if len(audio_window) == 0:
+                return
+            rms = float(np.sqrt(np.mean(audio_window ** 2)))
+            if rms < 0.005:
+                return
             t0w = time.perf_counter()
             t0c = time.process_time()
-            rms = float(np.sqrt(np.mean(audio_chunk ** 2)))
-            if rms < 0.005:
-                tx_queue.task_done()
-                continue
-            for text in transcribe_chunk_fn(audio_chunk):
-                if text:
-                    transcript_parts.append(text)
-                    print(text + " ", end="", flush=True)
+            window_text = " ".join(transcribe_chunk_fn(audio_window)).strip()
             total_tx_wall += time.perf_counter() - t0w
             total_tx_cpu += time.process_time() - t0c
+            if not window_text:
+                return
+            curr_words = window_text.split()
+            new_words = _new_words_from_overlap(prev_window_words, curr_words)
+            if new_words:
+                transcript_words.extend(new_words)
+                print(" ".join(new_words) + " ", end="", flush=True)
+            prev_window_words = curr_words
+
+        while True:
+            frame = tx_queue.get()
+            if frame is None:
+                _decode_once()  # final decode before exiting
+                tx_queue.task_done()
+                break
+            rolling_frames.append(frame)
+            frame_len = len(frame)
+            rolling_samples += frame_len
+            samples_since_decode += frame_len
+
+            while rolling_samples > max_buffer_samples and rolling_frames:
+                dropped = rolling_frames.pop(0)
+                rolling_samples -= len(dropped)
+
+            if samples_since_decode >= decode_every_samples:
+                _decode_once()
+                samples_since_decode = 0
             tx_queue.task_done()
 
     tx_thread = threading.Thread(target=transcription_worker, daemon=True)
     tx_thread.start()
 
-    CHUNK_SAMPLES = int(LIVE_CHUNK_SECONDS * SAMPLE_RATE)
-    pending: list[np.ndarray] = []
-    pending_samples = 0
-
     # Callback runs in sounddevice's thread — keeps main thread free for signals
     def audio_callback(indata: np.ndarray, frames: int, time_info, status) -> None:
-        nonlocal pending, pending_samples
         chunk = indata.copy()
         all_frames.append(chunk)
-        pending.append(chunk)
-        pending_samples += len(chunk)
-        if pending_samples >= CHUNK_SAMPLES:
-            tx_queue.put(np.concatenate(pending).flatten())
-            pending.clear()
-            pending_samples = 0
+        tx_queue.put(chunk)
 
     t0_record = time.perf_counter()
 
@@ -294,14 +367,6 @@ def record_and_transcribe_live(transcribe_chunk_fn: Callable[[np.ndarray], list[
 
     record_dur = time.perf_counter() - t0_record
 
-    # Flush any audio that didn't fill a full chunk
-    if pending:
-        print(
-            f"\n[debug] final flush enqueue: {pending_samples} pending samples queued for transcription.",
-            flush=True,
-        )
-        tx_queue.put(np.concatenate(pending).flatten())
-
     # Signal worker to stop and wait for remaining transcription to finish
     tx_queue.put(None)
     tx_thread.join()
@@ -311,7 +376,7 @@ def record_and_transcribe_live(transcribe_chunk_fn: Callable[[np.ndarray], list[
         np.concatenate(all_frames).flatten() if all_frames
         else np.array([], dtype=np.float32)
     )
-    transcript = " ".join(transcript_parts)
+    transcript = " ".join(transcript_words)
 
     print(f"\n  [{record_dur:.1f}s recorded · {total_tx_wall:.1f}s transcription · CPU {total_tx_cpu:.1f}s]")
     return transcript, full_audio
@@ -357,7 +422,6 @@ def run_claude_prompt(prompt: str) -> str:
         capture_output=True,
         text=True,
         check=True,
-        stderr=subprocess.DEVNULL,
     )
     return result.stdout.strip()
 
