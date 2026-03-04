@@ -65,9 +65,13 @@ cd voice-transcribe
 pip install -e .
 ```
 
-This installs: `faster-whisper`, `torch`, `sounddevice`, `numpy`, `transformers`, `sentencepiece`, and the `voice` command.
+This installs all dependencies including `lancedb` and `sentence-transformers`, and registers the `voice` and `voice-index` commands.
 
-Whisper model weights (`medium.en`, ~1.5 GB) are downloaded automatically on first run.
+On first run:
+- Whisper model weights (`medium.en`, ~1.5 GB) are downloaded automatically
+- The embedding model (`all-MiniLM-L6-v2`, ~80 MB) is downloaded on the first save
+
+> Note: `lancedb` bundles native binaries — first install may take a little longer than usual.
 
 ---
 
@@ -221,9 +225,30 @@ src/voice_transcribe/
 ├── llm.py            # LLM backend runners (claude, ollama), correct_with_llm
 ├── prompts.py        # process_prompt.md loading and template rendering
 ├── storage.py        # process_and_save: LLM processing, file naming, save to ~/transcript/
-├── vector.py         # Phase 2 stub — on_doc_saved() no-op called after each save
+├── vector.py         # LanceDB vector index: embed summaries, assign similarity colors
+├── index_cmd.py      # voice-index CLI: backfill index for existing transcripts
 ├── config.py         # all constants and default values
 └── process_prompt.md # LLM prompt template for structured output
+```
+
+## Vector index
+
+After each save, the `## Summary` section of the transcript is embedded using `sentence-transformers/all-MiniLM-L6-v2` and stored in a local LanceDB index at `~/.voice_transcribe/index.lancedb`.
+
+Each document is assigned a color from a 64-color palette. Documents with summary similarity ≥ 0.82 share a color; otherwise the least-used palette color is assigned. Colors are used in Phase 3 (Google Calendar events).
+
+### Backfill existing transcripts
+
+To index transcripts that were saved before the vector index existed:
+
+```bash
+voice-index
+```
+
+To index a custom directory:
+
+```bash
+voice-index --dir /path/to/transcripts
 ```
 
 ## Tests

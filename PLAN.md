@@ -15,7 +15,8 @@
 - `llm.py` — LLM backend runners (`claude`, `ollama`), `correct_with_llm`.
 - `prompts.py` — `process_prompt.md` loading and template rendering.
 - `storage.py` — `process_and_save`: LLM processing, file naming, save to `~/transcript/`.
-- `vector.py` — Phase 2 stub; `on_doc_saved` is a no-op called from `storage.py`.
+- `vector.py` — LanceDB vector index: embed summaries, assign similarity colors, search.
+- `index_cmd.py` — `voice-index` CLI for backfilling existing transcripts.
 - `config.py` — all constants and default values.
 - `process_prompt.md` — LLM prompt template for structured output.
 
@@ -52,21 +53,10 @@
 
 - Current known issues/constraints:
 - Audio + interactive loop remains complex and lightly unit-tested due to hardware/TTY interaction.
-- `vector.py` is still a Phase 2 no-op stub (no local vector DB yet).
+- Vector index is live; `on_doc_saved` is called after every save and is no longer a no-op.
 - README and code need to stay aligned as refactor progresses.
 
 ## Planned
-
-### Phase 2: Summary-Only Vector Foundation (Local)
-- Add local vector layer (`LanceDB`) and embedding wrapper.
-- Extract and embed only AI-generated `Summary` content from processed markdown.
-- Store metadata: `doc_id`, `hash`, `created_at`, `embedding_model_version`, `dictionary_version`.
-- Add similarity query path (`top-k`, threshold).
-- Add similarity color assignment:
-- Maintain a fixed internal palette of 64 colors.
-- Assign a color for each similarity group and persist it in vector metadata so similar items reuse the same color.
-- Use this assigned color later when creating Calendar events (Phase 3), with provider-specific mapping if needed.
-- Exit criteria: local persistent vector search works on summary-only text.
 
 ### Phase 3: Google Drive Snapshot Sync
 - Add Drive client for upload/download of vector snapshot + manifest.
@@ -114,6 +104,18 @@
 - Preserve phase boundaries; complete one phase at a time unless user overrides.
 
 ## Completed
+
+### Phase 2: Summary-Only Vector Foundation (Local) — 2026-03-04
+- `vector.py` fully implemented: LanceDB storage, sentence-transformers embeddings (`all-MiniLM-L6-v2`, 384-dim).
+- Embeds only `## Summary` section (robust regex extraction); never headers or raw transcript.
+- `doc_id` = `sha256(summary_text)` — content-addressed, stable across file renames.
+- Schema: `doc_id`, `path`, `created_at`, `updated_at`, `embedding_model`, `dictionary_version` (0), `color_hex`, `color_index`, `vector`.
+- Color assignment: nearest-neighbor cosine search (excluding self by `doc_id`); threshold 0.82; else least-used palette slot from 64-color HSL palette.
+- `search(query_text, top_k, threshold)` public API added.
+- `voice-index` console script added (`index_cmd.py`) for backfilling existing transcripts.
+- DB location: `~/.voice_transcribe/index.lancedb`.
+- New dependencies: `lancedb>=0.6`, `sentence-transformers>=2.7`.
+- `on_doc_saved` is silent on success, prints to stderr on failure (never crashes main flow).
 
 ### Phase 1: Refactor Without Behavior Change — 2026-03-04
 - Split `voice.py` monolith into: `config.py`, `stt.py`, `audio.py`, `llm.py`, `prompts.py`, `storage.py`, `cli.py`.

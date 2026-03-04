@@ -14,6 +14,8 @@ dependencies = [
     "numpy>=1.24",
     "transformers>=4.40",
     "sentencepiece>=0.2",
+    "lancedb>=0.6",
+    "sentence-transformers>=2.7",
 ]
 
 [project.optional-dependencies]
@@ -23,6 +25,7 @@ dev = [
 
 [project.scripts]
 voice = "voice_transcribe.voice:main"
+voice-index = "voice_transcribe.index_cmd:main"
 
 [tool.setuptools.packages.find]
 where = ["src"]
