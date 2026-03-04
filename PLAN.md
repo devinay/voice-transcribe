@@ -51,8 +51,8 @@
 - Environment variable overrides exist for all above settings.
 
 - Current known issues/constraints:
-- `voice.py` is handling too many concerns (CLI, audio loop, STT, LLM orchestration, file processing, save flow).
-- Test coverage for modular behavior is minimal.
+- Audio + interactive loop remains complex and lightly unit-tested due to hardware/TTY interaction.
+- `vector.py` is still a Phase 2 no-op stub (no local vector DB yet).
 - README and code need to stay aligned as refactor progresses.
 
 ## Planned
@@ -107,3 +107,4 @@
 - `pyproject.toml` entry point unchanged (`voice_transcribe.voice:main` still resolves correctly).
 - Runtime behavior and all CLI flags identical to pre-refactor.
 - Updated `Current` section and `README.md` to reflect new module layout.
+- Added Phase 1 unit tests: `tests/test_cli.py`, `tests/test_prompts.py`, `tests/test_storage.py`.

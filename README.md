@@ -229,5 +229,10 @@ src/voice_transcribe/
 ## Tests
 
 ```bash
-pytest
+.venv/bin/pytest -q
 ```
+
+Current unit tests cover:
+- CLI argument defaults/preset behavior (`tests/test_cli.py`)
+- Prompt template substitution (`tests/test_prompts.py`)
+- Save/index flow wiring in `storage.process_and_save` (`tests/test_storage.py`)
