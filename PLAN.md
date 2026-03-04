@@ -7,10 +7,17 @@
 - Main command: `voice` (console script from `pyproject.toml`).
 - Module run: `python -m voice_transcribe.voice`.
 
-- Current code structure (gross):
-- Most behavior is still concentrated in one file: `src/voice_transcribe/voice.py`.
-- Supporting prompt template file: `src/voice_transcribe/process_prompt.md`.
-- No dedicated modules yet for audio, STT, LLM backends, storage, or vector logic.
+- Current code structure:
+- `voice.py` — thin entrypoint only; imports `main` from `cli.py`.
+- `cli.py` — argument parsing, config display, `prompt_review`, `main` loop.
+- `audio.py` — recording, live streaming decode, display helpers.
+- `stt.py` — STT backend loaders (`faster-whisper`, `mlx-whisper`), `write_wav`.
+- `llm.py` — LLM backend runners (`claude`, `ollama`), `correct_with_llm`.
+- `prompts.py` — `process_prompt.md` loading and template rendering.
+- `storage.py` — `process_and_save`: LLM processing, file naming, save to `~/transcript/`.
+- `vector.py` — Phase 2 stub; `on_doc_saved` is a no-op called from `storage.py`.
+- `config.py` — all constants and default values.
+- `process_prompt.md` — LLM prompt template for structured output.
 
 - Current STT behavior:
 - STT backends supported: `faster-whisper` and `mlx-whisper`.
@@ -49,18 +56,6 @@
 - README and code need to stay aligned as refactor progresses.
 
 ## Planned
-### Phase 1: Refactor Without Behavior Change
-- Split monolith into modules: `cli`, `audio`, `stt`, `llm`, `prompts`, `transcript`, `storage/local_files`, `config`, `types`.
-- Keep runtime behavior and flags unchanged.
-- Add basic tests for prompt loading and transcript parsing.
-- Exit criteria: existing flow runs with identical behavior.
-- Immediate refactor targets:
-- Move `parse_args`, `_print_config`, and `main` wiring to `cli.py`.
-- Move recording and streaming loop (`record_and_transcribe_live`) to `audio.py`.
-- Move STT loaders/backends (`load_transcriber`, wav helper) to `stt.py`.
-- Move LLM backend runners and correction/processing helpers to `llm.py`.
-- Move prompt file loading/rendering into `prompts.py`.
-- Keep `voice.py` as thin compatibility entrypoint importing from new modules.
 
 ### Phase 2: Summary-Only Vector Foundation (Local)
 - Add local vector layer (`LanceDB`) and embedding wrapper.
@@ -104,3 +99,11 @@
 - Preserve phase boundaries; complete one phase at a time unless user overrides.
 
 ## Completed
+
+### Phase 1: Refactor Without Behavior Change — 2026-03-04
+- Split `voice.py` monolith into: `config.py`, `stt.py`, `audio.py`, `llm.py`, `prompts.py`, `storage.py`, `cli.py`.
+- `voice.py` is now a thin entrypoint: imports and re-exports `main` from `cli.py`.
+- `vector.py` stub added with `on_doc_saved(path)` no-op callout; called from `storage.process_and_save` after each file save (Phase 2 hook).
+- `pyproject.toml` entry point unchanged (`voice_transcribe.voice:main` still resolves correctly).
+- Runtime behavior and all CLI flags identical to pre-refactor.
+- Updated `Current` section and `README.md` to reflect new module layout.

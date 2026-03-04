@@ -210,6 +210,22 @@ All CLI options can also be set via environment variables:
 | `VOICE_CORRECTION_OLLAMA_MODEL` | value of `VOICE_OLLAMA_MODEL` |
 | `VOICE_PROCESS_OLLAMA_MODEL` | value of `VOICE_OLLAMA_MODEL` |
 
+## Code structure
+
+```
+src/voice_transcribe/
+├── voice.py          # thin entrypoint — imports main from cli.py
+├── cli.py            # argument parsing, config display, prompt_review, main loop
+├── audio.py          # recording, live streaming decode, display helpers
+├── stt.py            # STT backend loaders (faster-whisper, mlx-whisper)
+├── llm.py            # LLM backend runners (claude, ollama), correct_with_llm
+├── prompts.py        # process_prompt.md loading and template rendering
+├── storage.py        # process_and_save: LLM processing, file naming, save to ~/transcript/
+├── vector.py         # Phase 2 stub — on_doc_saved() no-op called after each save
+├── config.py         # all constants and default values
+└── process_prompt.md # LLM prompt template for structured output
+```
+
 ## Tests
 
 ```bash
