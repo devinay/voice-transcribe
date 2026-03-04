@@ -9,27 +9,81 @@ A local, offline voice recorder with live Whisper transcription and LLM-powered 
 
 Everything runs locally — no audio leaves your machine (unless you use the Claude CLI backend, which sends transcript text to Claude).
 
-## Requirements
+## Dependencies
 
-- Python 3.11+
-- A working microphone
-- [Claude CLI](https://github.com/anthropics/claude-code) (default) or [Ollama](https://ollama.com) for LLM processing
+### System dependencies
 
-## Setup
+**PortAudio** is required by `sounddevice` for microphone access.
 
-Install with [uv](https://github.com/astral-sh/uv) (recommended):
+macOS:
+```bash
+brew install portaudio
+```
+
+Ubuntu/Debian:
+```bash
+sudo apt install portaudio19-dev
+```
+
+**Python 3.11+** is required. Check your version with `python3 --version`.
+
+---
+
+### LLM backend
+
+You need at least one of these:
+
+**Claude CLI** (default backend):
+```bash
+npm install -g @anthropic-ai/claude-code
+claude login
+```
+
+**Ollama** (fully local, used by `--default`):
+```bash
+# Install Ollama: https://ollama.com
+ollama pull qwen2.5:7b-instruct
+```
+
+---
+
+### Python packages
+
+Clone the repo and install with [uv](https://github.com/astral-sh/uv) (recommended):
 
 ```bash
-uv pip install -e ".[dev]"
+git clone https://github.com/devinay/voice-transcribe.git
+cd voice-transcribe
+uv pip install -e .
 ```
 
 Or with pip:
 
 ```bash
-pip install -e ".[dev]"
+git clone https://github.com/devinay/voice-transcribe.git
+cd voice-transcribe
+pip install -e .
 ```
 
-On first run the Whisper model weights are downloaded automatically.
+This installs: `faster-whisper`, `torch`, `sounddevice`, `numpy`, `transformers`, `sentencepiece`, and the `voice` command.
+
+Whisper model weights (`medium.en`, ~1.5 GB) are downloaded automatically on first run.
+
+---
+
+### Optional: Apple Silicon (mlx-whisper)
+
+For faster transcription on Apple Silicon, install the `mlx-whisper` backend:
+
+```bash
+uv pip install mlx-whisper
+```
+
+Then use it with:
+
+```bash
+voice --stt-backend mlx-whisper
+```
 
 ## Usage
 
