@@ -85,7 +85,31 @@ Then use it with:
 voice --stt-backend mlx-whisper
 ```
 
-## Usage
+## Running
+
+### With Ollama (recommended, fully local)
+
+`--default` uses Ollama for both correction and processing. Ollama must be running before you start:
+
+```bash
+# In a separate terminal (or as a background service):
+ollama serve
+
+# Then start a session:
+voice --default
+```
+
+If Ollama is already running as a system service (e.g. installed via the macOS app), you can skip `ollama serve`.
+
+### With Claude CLI
+
+```bash
+voice --correction-backend claude --process-backend claude
+```
+
+Claude CLI handles its own authentication — no extra process needed.
+
+### Checking your configuration
 
 Running with no arguments prints the effective configuration (from env vars and built-in defaults) and exits:
 
