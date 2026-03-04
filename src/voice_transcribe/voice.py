@@ -547,7 +547,23 @@ def parse_args() -> argparse.Namespace:
     env_correction_model = os.getenv("VOICE_CORRECTION_OLLAMA_MODEL", env_ollama_model)
     env_process_model = os.getenv("VOICE_PROCESS_OLLAMA_MODEL", env_ollama_model)
 
+    _DEFAULT_PRESET = (
+        "--stt-backend faster-whisper --whisper-model medium.en "
+        "--correction-backend ollama --process-backend ollama "
+        "--correction-ollama-model qwen2.5:7b-instruct "
+        "--process-ollama-model qwen2.5:7b-instruct"
+    )
+
     parser = argparse.ArgumentParser()
+    parser.add_argument(
+        "--default",
+        action="store_true",
+        default=False,
+        help=(
+            "Apply the built-in default preset, ignoring environment variables: "
+            + _DEFAULT_PRESET
+        ),
+    )
     parser.add_argument(
         "--stt-backend",
         choices=["faster-whisper", "mlx-whisper"],
@@ -586,12 +602,44 @@ def parse_args() -> argparse.Namespace:
         default=env_process_model,
         help="Ollama model to use when --process-backend=ollama.",
     )
-    return parser.parse_args()
+    args = parser.parse_args()
+
+    if args.default:
+        args.stt_backend = "faster-whisper"
+        args.whisper_model = DEFAULT_MODEL
+        args.correction_backend = "ollama"
+        args.process_backend = "ollama"
+        args.correction_ollama_model = DEFAULT_OLLAMA_MODEL
+        args.process_ollama_model = DEFAULT_OLLAMA_MODEL
+
+    return args
+
+
+def _print_config(args: argparse.Namespace) -> None:
+    print("Effective configuration:")
+    print(f"  --stt-backend               {args.stt_backend}")
+    print(f"  --whisper-model             {args.whisper_model}")
+    print(f"  --mlx-model                 {args.mlx_model}")
+    print(f"  --correction-backend        {args.correction_backend}")
+    print(f"  --correction-ollama-model   {args.correction_ollama_model}")
+    print(f"  --process-backend           {args.process_backend}")
+    print(f"  --process-ollama-model      {args.process_ollama_model}")
+    print()
+    print("Use --default to apply the built-in preset (ignores env vars):")
+    print("  --stt-backend faster-whisper --whisper-model medium.en")
+    print("  --correction-backend ollama  --correction-ollama-model qwen2.5:7b-instruct")
+    print("  --process-backend ollama     --process-ollama-model qwen2.5:7b-instruct")
+    print()
+    print("Run 'voice --help' for all options.")
 
 
 def main() -> None:
     # sys.stderr = open(os.devnull, "w")  # uncomment once stable
     args = parse_args()
+
+    if len(sys.argv) == 1:
+        _print_config(args)
+        sys.exit(0)
 
     transcribe_chunk_fn = load_transcriber(
         stt_backend=args.stt_backend,
