@@ -16,6 +16,7 @@ dependencies = [
     "sentencepiece>=0.2",
     "lancedb>=0.6",
     "sentence-transformers>=2.7",
+    "pandas>=2.0",
 ]
 
 [project.optional-dependencies]
