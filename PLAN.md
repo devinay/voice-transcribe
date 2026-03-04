@@ -97,6 +97,24 @@
 - Document runbook (setup, backup/restore, rollback).
 - Exit criteria: operationally stable workflow.
 
+## Optional / Exploratory
+
+### UI Layer (not scheduled)
+The tool is currently terminal-only (termios/tty for input, stdout for output). A UI would replace the keypress input model with button callbacks; the audio capture and transcription threads in `audio.py` stay unchanged.
+
+Two use cases driving this: (1) a record button instead of SPACE, and (2) a similarity search browser showing results with palette colors.
+
+**Options considered:**
+
+- **PyQt6 / PySide6** — strongest fit if staying Python. Signals/slots map naturally onto the existing threading model. Real-time transcript updates and colored similarity cards are straightforward. Native macOS look with Qt's macOS style. ~50 MB extra dependency.
+- **Textual (TUI)** — stays in the terminal, replaces raw termios with a proper widget model. Record button, live transcript panel, similarity results panel all doable. Good middle ground if a windowed app isn't needed.
+- **Gradio / Streamlit** — quick for the similarity search side, but poor fit for live recording (browser mic → server streaming adds latency and complexity).
+- **SwiftUI + local FastAPI backend** — best native macOS result. Python code stays as-is; Swift owns the window/buttons/animations; they communicate over a local socket or stdio. Most work, best outcome for a real app.
+
+**Key integration point:** the recording button must start/stop the audio stream and receive live transcription updates. This is clean in PyQt (emit signals from the audio thread), awkward in web-based frameworks.
+
+**Recommended path if pursued:** PyQt6 for a quick functional UI; SwiftUI + FastAPI if a polished macOS app is the goal.
+
 ## Handoff Notes (LLM Resume)
 - Source of truth: this file.
 - Never embed headers or raw transcript; embed summary text only.
