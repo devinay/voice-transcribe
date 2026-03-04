@@ -62,6 +62,10 @@
 - Extract and embed only AI-generated `Summary` content from processed markdown.
 - Store metadata: `doc_id`, `hash`, `created_at`, `embedding_model_version`, `dictionary_version`.
 - Add similarity query path (`top-k`, threshold).
+- Add similarity color assignment:
+- Maintain a fixed internal palette of 64 colors.
+- Assign a color for each similarity group and persist it in vector metadata so similar items reuse the same color.
+- Use this assigned color later when creating Calendar events (Phase 3), with provider-specific mapping if needed.
 - Exit criteria: local persistent vector search works on summary-only text.
 
 ### Phase 3: Google Drive Snapshot Sync
@@ -69,6 +73,17 @@
 - Sync flow: download latest snapshot -> update locally -> upload new snapshot.
 - Add lock/version checks to avoid overwrite races.
 - Add local-first fallback when Drive is unavailable.
+- Add Calendar action-item flow after markdown generation:
+- Parse `## Next Actions` checklist from the generated markdown.
+- If one or more actions exist, prompt user whether to create Google Calendar events.
+- If user says `yes`, create events on today's date starting at 9:00 AM, each 30 minutes long, with 15-minute gaps.
+- Event title: action item text.
+- Event description:
+- Link back to the uploaded Drive document.
+- Context paragraph from the document that produced the action item.
+- Event color:
+- Use the similarity color from Phase 2.
+- If Google Calendar API color restrictions apply, map internal color to the closest supported event color and record both values.
 - Exit criteria: reliable snapshot round-trip and conflict handling.
 
 ### Phase 4: Normalization Dictionary + Controlled Re-embedding

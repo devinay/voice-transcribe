@@ -236,3 +236,13 @@ Current unit tests cover:
 - CLI argument defaults/preset behavior (`tests/test_cli.py`)
 - Prompt template substitution (`tests/test_prompts.py`)
 - Save/index flow wiring in `storage.process_and_save` (`tests/test_storage.py`)
+
+## Roadmap Notes (Phase 2/3)
+
+- Phase 2 will add a local LanceDB vector index based only on generated `Summary` content (not raw transcript/headers).
+- Similar documents will share a persisted color chosen from a fixed internal palette of 64 colors.
+- Phase 3 will optionally create Google Calendar events from `Next Actions` after markdown generation:
+  - prompt user for confirmation before creating events
+  - schedule for today starting 9:00 AM in 30-minute slots with 15-minute gaps
+  - include action text as title, plus Drive link and source context in description
+- Note: Google Calendar event colors are API-limited to Google color IDs, so internal palette colors will be mapped to the closest supported Calendar color when creating events.
