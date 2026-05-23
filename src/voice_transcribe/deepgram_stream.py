@@ -93,19 +93,17 @@ def run_push_to_talk_session(
 
         def _receive_loop() -> None:
             nonlocal final_transcript
-            try:
-                cols = os.get_terminal_size().columns
-            except OSError:
-                cols = 80
             prev_lines = 0
 
             def _print_transcript(text: str) -> None:
                 nonlocal prev_lines
-                # move cursor up to overwrite previous output
+                try:
+                    cols = os.get_terminal_size().columns
+                except OSError:
+                    cols = 80
                 if prev_lines:
                     print(f"\033[{prev_lines}A\033[J", end="", flush=True)
                 print("  " + text, flush=True)
-                # calculate how many terminal lines this text occupies
                 prev_lines = max(1, (len(text) + 2 + cols - 1) // cols)
 
             try:
