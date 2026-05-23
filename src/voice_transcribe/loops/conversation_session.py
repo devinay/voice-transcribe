@@ -101,6 +101,7 @@ def run(
             continue
 
         # Normal orchestrator turn
+        print("  Thinking...", flush=True)
         try:
             response = orch.turn(user_text)
         except ProtocolError as exc:
