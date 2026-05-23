@@ -1,5 +1,7 @@
 import argparse
+import datetime
 import os
+import pathlib
 import sys
 
 from voice_transcribe.audio import clear_screen
@@ -9,7 +11,30 @@ from voice_transcribe.config import (
     DEFAULT_MLX_MODEL,
     DEFAULT_MODEL,
     DEFAULT_OLLAMA_MODEL,
+    LOG_FILE,
 )
+
+
+class _StderrTee:
+    """Mirrors stderr to both the terminal and a log file."""
+
+    def __init__(self, log_path: pathlib.Path) -> None:
+        self._orig = sys.stderr
+        log_path.parent.mkdir(parents=True, exist_ok=True)
+        self._log = open(log_path, "a", buffering=1)
+        self._log.write(f"\n--- {datetime.datetime.now().isoformat(timespec='seconds')} ---\n")
+
+    def write(self, data: str) -> int:
+        self._orig.write(data)
+        self._log.write(data)
+        return len(data)
+
+    def flush(self) -> None:
+        self._orig.flush()
+        self._log.flush()
+
+    def fileno(self) -> int:
+        return self._orig.fileno()
 from voice_transcribe.loops import conversational
 from voice_transcribe.storage import process_and_save
 from voice_transcribe.stt import load_transcriber
@@ -123,12 +148,14 @@ def _print_config(args: argparse.Namespace) -> None:
 
 
 def main() -> None:
-    # sys.stderr = open(os.devnull, "w")  # uncomment once stable
     args = parse_args()
 
     if len(sys.argv) == 1:
         _print_config(args)
         sys.exit(0)
+
+    sys.stderr = _StderrTee(LOG_FILE)
+    print(f"  log → {LOG_FILE}", flush=True)
 
     transcribe_chunk_fn = load_transcriber(
         stt_backend=args.stt_backend,

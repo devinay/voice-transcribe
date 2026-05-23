@@ -23,6 +23,7 @@ DEFAULT_OLLAMA_MODEL = "qwen2.5:7b-instruct"
 
 # Vector store (Phase 2)
 VECTOR_DB_DIR = pathlib.Path.home() / ".voice_transcribe" / "index.lancedb"
+LOG_FILE = pathlib.Path.home() / ".voice_transcribe" / "output.log"
 VECTOR_SIMILARITY_THRESHOLD = 0.82
 EMBEDDING_MODEL = "all-MiniLM-L6-v2"
 EMBEDDING_DIM = 384  # output dimension for all-MiniLM-L6-v2
