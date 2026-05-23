@@ -21,7 +21,6 @@ from collections.abc import Callable
 import numpy as np
 import sounddevice as sd
 from deepgram import DeepgramClient
-from deepgram.listen.v2.types.listen_v2turn_info import ListenV2TurnInfo
 
 from voice_transcribe.config import CHANNELS, CHUNK_FRAMES, DTYPE, SAMPLE_RATE
 
@@ -105,21 +104,23 @@ def run_push_to_talk_session(
             nonlocal final_transcript
             try:
                 for message in socket:
-                    print(f"  [deepgram msg] {type(message).__name__}: {message!r}", flush=True)
-                    if isinstance(message, ListenV2TurnInfo):
-                        text = message.transcript.strip()
-                        if text:
-                            final_transcript = text
-                            print(_CLEAR + text, end="", flush=True)
-                            if on_partial:
-                                on_partial(text)
+                    if not isinstance(message, dict) or message.get("type") != "TurnInfo":
+                        continue
+                    text = message.get("transcript", "").strip()
+                    event = message.get("event", "")
+                    if text and event in ("Update", "StartOfTurn"):
+                        print(_CLEAR + text, end="", flush=True)
+                        if on_partial:
+                            on_partial(text)
+                    elif event == "EndOfTurn" and text:
+                        final_transcript = text
+                        print(_CLEAR + text, end="", flush=True)
             except Exception as e:
                 print(f"  [deepgram recv error] {e}", flush=True)
 
         recv_thread = threading.Thread(target=_receive_loop, daemon=True)
         recv_thread.start()
 
-        chunks_sent = 0
         with sd.InputStream(
             samplerate=SAMPLE_RATE,
             channels=CHANNELS,
@@ -131,11 +132,10 @@ def run_push_to_talk_session(
                 try:
                     chunk = audio_queue.get(timeout=0.1)
                     socket.send_media(chunk)
-                    chunks_sent += 1
                 except queue.Empty:
                     pass
 
-            print(f"\n  Stopped. Sent {chunks_sent} audio chunks. Waiting for final transcript...", flush=True)
+            print("\n  Stopped. Waiting for final transcript...", flush=True)
             while not audio_queue.empty():
                 try:
                     chunk = audio_queue.get_nowait()
