@@ -89,6 +89,22 @@ Then use it with:
 voice --stt-backend mlx-whisper
 ```
 
+### Optional: IBM Granite Speech
+
+To use the `granite-speech` backend (`ibm-granite/granite-speech-4.1-2b`), install `torchaudio`:
+
+```bash
+uv add torchaudio
+```
+
+Then use it with:
+
+```bash
+voice --stt-backend granite-speech
+```
+
+First run downloads ~4GB of model weights. On Apple Silicon the model runs on MPS (float16) automatically.
+
 ## Running
 
 ### With Ollama (recommended, fully local)
@@ -157,12 +173,13 @@ After 5 minutes of inactivity the session is saved automatically.
 
 ### Speech-to-text
 
-Two backends are supported, selectable via `--stt-backend`:
+Three backends are supported, selectable via `--stt-backend`:
 
 | Backend | Default model | Notes |
 |---------|--------------|-------|
 | `faster-whisper` (default) | `medium.en` | Runs on CPU (int8) or GPU (float16) |
 | `mlx-whisper` | `mlx-community/whisper-small.en-mlx` | Apple Silicon only; install `mlx-whisper` separately |
+| `granite-speech` | `ibm-granite/granite-speech-4.1-2b` | Multilingual ASR with punctuation; MPS on Apple Silicon; requires `torchaudio`; ~4GB weights |
 
 ### LLM processing
 
@@ -189,9 +206,10 @@ The output document contains:
 
 ```
 --default                         # apply built-in preset, ignoring env vars (see Usage above)
---stt-backend {faster-whisper,mlx-whisper}
+--stt-backend {faster-whisper,mlx-whisper,granite-speech}
 --whisper-model MODEL_SIZE        # e.g. tiny, base, small, medium, large (default: medium.en)
 --mlx-model MODEL_ID              # HuggingFace repo id for mlx-whisper
+--granite-model MODEL_ID          # HuggingFace repo id for granite-speech (default: ibm-granite/granite-speech-4.1-2b)
 --correction-backend {claude,ollama}
 --process-backend {claude,ollama}
 --correction-ollama-model MODEL
@@ -207,6 +225,7 @@ All CLI options can also be set via environment variables:
 | `VOICE_STT_BACKEND` | `faster-whisper` |
 | `VOICE_WHISPER_MODEL` | `medium.en` |
 | `VOICE_MLX_MODEL` | `mlx-community/whisper-small.en-mlx` |
+| `VOICE_GRANITE_MODEL` | `ibm-granite/granite-speech-4.1-2b` |
 | `VOICE_LLM_BACKEND` | `claude` |
 | `VOICE_CORRECTION_BACKEND` | value of `VOICE_LLM_BACKEND` |
 | `VOICE_PROCESS_BACKEND` | value of `VOICE_LLM_BACKEND` |
@@ -221,7 +240,7 @@ src/voice_transcribe/
 ├── voice.py          # thin entrypoint — imports main from cli.py
 ├── cli.py            # argument parsing, config display, prompt_review, main loop
 ├── audio.py          # recording, live streaming decode, display helpers
-├── stt.py            # STT backend loaders (faster-whisper, mlx-whisper)
+├── stt.py            # STT backend loaders (faster-whisper, mlx-whisper, granite-speech)
 ├── llm.py            # LLM backend runners (claude, ollama), correct_with_llm
 ├── prompts.py        # process_prompt.md loading and template rendering
 ├── storage.py        # process_and_save: LLM processing, file naming, save to ~/transcript/
