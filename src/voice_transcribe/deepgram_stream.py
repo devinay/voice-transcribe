@@ -77,20 +77,12 @@ def run_push_to_talk_session(
         finally:
             termios.tcsetattr(fd, termios.TCSADRAIN, old)
 
-    print("Press SPACE to start recording, press any key to stop. Ctrl+C to quit.")
-    key_thread = threading.Thread(target=_key_listener, daemon=True)
-    key_thread.start()
-
-    start_event.wait()
-    print(f"\n  {_RED}●{_RESET} ", end="", flush=True)
-
     def _audio_callback(indata: np.ndarray, frames: int, time_info, status) -> None:
         if not stop_event.is_set():
             pcm = (indata * 32767).astype(np.int16).tobytes()
             audio_queue.put(pcm)
 
     final_transcript = ""
-    print("  Connecting to Deepgram...", flush=True)
     client = DeepgramClient(api_key=api_key)
 
     with client.listen.v2.connect(
@@ -98,7 +90,6 @@ def run_push_to_talk_session(
         encoding="linear16",
         sample_rate=SAMPLE_RATE,
     ) as socket:
-        print("  Connected. Streaming audio...", flush=True)
 
         def _receive_loop() -> None:
             nonlocal final_transcript
@@ -109,17 +100,25 @@ def run_push_to_talk_session(
                     text = message.get("transcript", "").strip()
                     event = message.get("event", "")
                     if text and event in ("Update", "StartOfTurn"):
-                        print(_CLEAR + text, end="", flush=True)
+                        # overwrite current transcript line
+                        print(_CLEAR + "  " + text, end="", flush=True)
                         if on_partial:
                             on_partial(text)
                     elif event == "EndOfTurn" and text:
                         final_transcript = text
-                        print(_CLEAR + text, end="", flush=True)
-            except Exception as e:
-                print(f"  [deepgram recv error] {e}", flush=True)
+                        print(_CLEAR + "  " + text, end="", flush=True)
+            except Exception:
+                pass
 
         recv_thread = threading.Thread(target=_receive_loop, daemon=True)
         recv_thread.start()
+
+        print("Press SPACE to start recording, any key to stop. Ctrl+C to quit.")
+        key_thread = threading.Thread(target=_key_listener, daemon=True)
+        key_thread.start()
+
+        start_event.wait()
+        print(f"\n  {_RED}●{_RESET} Recording...\n", flush=True)
 
         with sd.InputStream(
             samplerate=SAMPLE_RATE,
@@ -135,7 +134,7 @@ def run_push_to_talk_session(
                 except queue.Empty:
                     pass
 
-            print("\n  Stopped. Waiting for final transcript...", flush=True)
+            # drain remaining audio
             while not audio_queue.empty():
                 try:
                     chunk = audio_queue.get_nowait()
@@ -143,11 +142,9 @@ def run_push_to_talk_session(
                 except queue.Empty:
                     break
 
-        print("  Closing stream...", flush=True)
         socket.send_close_stream()
         recv_thread.join(timeout=5.0)
         key_thread.join(timeout=1.0)
-        print("  Done.", flush=True)
 
     print(flush=True)
     return final_transcript

@@ -55,7 +55,7 @@ def _get_api_key() -> str:
 
 def parse_args() -> argparse.Namespace:
     env_backend = os.getenv("VOICE_LLM_BACKEND", DEFAULT_LLM_BACKEND).lower()
-    if env_backend not in {"claude", "ollama"}:
+    if env_backend not in {"claude", "ollama", "openai"}:
         env_backend = DEFAULT_LLM_BACKEND
 
     env_ollama_model = os.getenv("VOICE_OLLAMA_MODEL", DEFAULT_OLLAMA_MODEL)
@@ -65,7 +65,7 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument(
         "--llm-backend",
-        choices=["claude", "ollama"],
+        choices=["claude", "ollama", "openai"],
         default=env_backend,
         help="LLM backend for orchestration and processing.",
     )
