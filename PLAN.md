@@ -58,7 +58,57 @@
 
 ## Planned
 
-### Phase 3: Google Drive Snapshot Sync
+### Structural Refactor: Two-Loop Architecture
+
+Before Phase 3. No behavior change — makes the two loops explicit in the code.
+
+**New packages:**
+- `loops/conversational.py` — Loop 1. Extracts the record→review→add/correct/exit loop from `cli.py`. `run(transcribe_fn, correction_backend, correction_ollama_model) -> str`.
+- `loops/agent.py` — Loop 2. Generic text-based agent loop. Sends a growing context to the LLM, parses fenced JSON tool-call blocks from the response, executes the matching function, appends the result, repeats until no tool call appears. `run(system_prompt, initial_message, tools, tool_fns, llm_backend, ollama_model) -> str`.
+- `agents/` — one module per agent, each owning its system prompt, tool schemas, and tool functions; calls `loops.agent.run()`.
+- `tools/` — thin wrappers around external CLI tools (D2, etc).
+
+**Tool call convention (no new SDK):** LLM signals a tool call with a fenced JSON block; absence of that block ends the loop.
+
+**`cli.py` after refactor:** `loops.conversational.run()` → `storage.process_and_save()` → diagram suggestion flow → display markdown.
+
+Exit criteria: existing behavior unchanged; code structure clearly separates Loop 1 and Loop 2.
+
+### Phase 3: Diagram Agent
+
+**Output layout:** `process_and_save` now creates a named directory instead of a flat file:
+
+```
+~/transcript/
+  some_five_word_name/
+    some_five_word_name.md
+    deployment_sequence.png
+    architecture_overview.png
+```
+
+Markdown image references use relative paths (`![label](filename.png)`), making the session directory self-contained and portable. `storage.py` updated to write into the directory instead of a flat `.md`.
+
+**Trigger:** After `process_and_save`, the LLM reads the saved markdown and responds with a list of diagrams it thinks would be useful (or none). Each entry has a short label and a description of what the diagram should show.
+
+**Per-diagram flow (repeats for each suggestion):**
+1. CLI prints: `Suggested: "Deployment sequence" — steps from build to prod. Add it? [y/N]`
+2. If yes: `agents.diagram.run(description, session_dir, llm_backend, ollama_model) -> Path`
+3. Agent loop: LLM generates D2 syntax → `tools.d2.render()` → result (success + any errors) fed back → LLM refines → repeats until satisfied.
+4. On success: PNG saved into the session directory; image reference embedded in the markdown file.
+
+**`tools/d2.py`:** `render(syntax, output_path) -> dict` — `d2 - <output>` with syntax on stdin. Returns `{success, image_path}` or `{success, error}`. Clear error if `d2` not installed.
+
+**`agents/diagram.py`:** owns D2 system prompt (node/edge/shape/direction guide), single `render_d2` tool. Uses same `--process-backend` and `--process-ollama-model` as the rest of the pipeline.
+
+**Display:** After all diagrams are resolved, the final markdown is rendered to the terminal using `rich`. Image lines show as `[image]` placeholders (terminal can't render pixels).
+
+**Vision feedback loop** (render PNG → feed image to vision model for critique): deferred — requires image-input support not in the current subprocess path.
+
+**New dependency:** `rich>=13.0`
+
+Exit criteria: given a transcript, the LLM suggests relevant diagrams, user can accept/decline each, accepted ones are rendered with D2 and embedded in the session directory markdown.
+
+### Phase 4: Google Drive Snapshot Sync
 - Add Drive client for upload/download of vector snapshot + manifest.
 - Sync flow: download latest snapshot -> update locally -> upload new snapshot.
 - Add lock/version checks to avoid overwrite races.
@@ -76,21 +126,21 @@
 - If Google Calendar API color restrictions apply, map internal color to the closest supported event color and record both values.
 - Exit criteria: reliable snapshot round-trip and conflict handling.
 
-### Phase 4: Normalization Dictionary + Controlled Re-embedding
+### Phase 5: Normalization Dictionary + Controlled Re-embedding
 - Detect candidate new terms/abbreviations from summaries.
 - Use LLM to propose normalization/synonyms.
 - Add confirmation gate (`accept/reject/defer`) before applying rules.
 - Version dictionary; re-embed only affected docs.
 - Exit criteria: governed dictionary growth with incremental re-embedding.
 
-### Phase 5: Fine-Tune Readiness and Periodic Offers
+### Phase 6: Fine-Tune Readiness and Periodic Offers
 - Track readiness signals: new docs since last tune, accepted mappings, labeled pairs.
 - Evaluate retrieval quality on holdout set before any model change.
 - Offer fine-tune only when criteria pass, and require explicit confirmation.
 - Keep rollback path for embedding model/index versions.
 - Exit criteria: safe, measurable fine-tune recommendation workflow.
 
-### Phase 6: Hardening and Operations
+### Phase 7: Hardening and Operations
 - Add observability (ingest/sync/re-embed/failure metrics).
 - Add retry/backoff/resume for Drive and API failures.
 - Add integration tests with mocked external dependencies.
