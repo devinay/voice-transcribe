@@ -9,8 +9,11 @@ from voice_transcribe.llm import run_llm_prompt
 from voice_transcribe.prompts import load_process_prompt
 
 
-def process_and_save(transcript: str, llm_backend: str, ollama_model: str) -> None:
-    """Process the final transcript with the selected LLM backend and save to ~/transcript/."""
+def process_and_save(transcript: str, llm_backend: str, ollama_model: str) -> pathlib.Path:
+    """Process the final transcript with the selected LLM backend and save to ~/transcript/.
+
+    Returns the session directory (~/transcript/<name>/).
+    """
     TRANSCRIPT_DIR.mkdir(exist_ok=True)
 
     timestamp = time.strftime("%Y%m%d_%H%M%S")
@@ -32,14 +35,18 @@ def process_and_save(transcript: str, llm_backend: str, ollama_model: str) -> No
     )
     raw = run_llm_prompt(filename_prompt, llm_backend, ollama_model).lower()
 
-    filename = "".join(c if c.isalnum() or c == "_" else "_" for c in raw)
-    filename = "_".join(w for w in filename.split("_") if w) + ".md"
+    name = "".join(c if c.isalnum() or c == "_" else "_" for c in raw)
+    name = "_".join(w for w in name.split("_") if w)
 
     print(_CLEAR, end="", flush=True)
 
-    dest = TRANSCRIPT_DIR / filename
-    shutil.move(str(tmp), dest)  # only removes tmp on success
+    session_dir = TRANSCRIPT_DIR / name
+    session_dir.mkdir(exist_ok=True)
+    dest = session_dir / f"{name}.md"
+    shutil.move(str(tmp), dest)
     print(f"\nSaved → {dest}")
 
     # Phase 2: index the saved document in the vector store
     vector.on_doc_saved(dest)
+
+    return session_dir

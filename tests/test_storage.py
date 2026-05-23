@@ -20,9 +20,11 @@ def test_process_and_save_writes_markdown_and_indexes(monkeypatch, tmp_path):
     monkeypatch.setattr(storage, "run_llm_prompt", fake_run_llm_prompt)
     monkeypatch.setattr(storage.vector, "on_doc_saved", lambda p: indexed_paths.append(pathlib.Path(p)))
 
-    storage.process_and_save("raw transcript", "ollama", "qwen2.5:7b-instruct")
+    session_dir = storage.process_and_save("raw transcript", "ollama", "qwen2.5:7b-instruct")
 
-    saved = tmp_path / "daily_standup_summary_draft_v1.md"
+    name = "daily_standup_summary_draft_v1"
+    assert session_dir == tmp_path / name
+    saved = session_dir / f"{name}.md"
     assert saved.exists()
     assert "## Summary" in saved.read_text()
 
