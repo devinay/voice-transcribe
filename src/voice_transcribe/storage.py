@@ -3,7 +3,9 @@ import shutil
 import time
 
 from voice_transcribe import vector
-from voice_transcribe.audio import _CLEAR, _RED, _RESET
+_RED = "\033[31m"
+_RESET = "\033[0m"
+_CLEAR = "\r" + " " * 40 + "\r"
 from voice_transcribe.config import TRANSCRIPT_DIR
 from voice_transcribe.llm import run_llm_prompt
 from voice_transcribe.prompts import load_process_prompt

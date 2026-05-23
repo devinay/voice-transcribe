@@ -1,46 +1,55 @@
 import importlib
+import sys
 
 
 def _load_cli():
     return importlib.import_module("voice_transcribe.cli")
 
 
-def test_parse_args_default_preset_overrides_env(monkeypatch):
+def test_parse_args_defaults(monkeypatch):
     cli = _load_cli()
-
-    monkeypatch.setenv("VOICE_STT_BACKEND", "mlx-whisper")
-    monkeypatch.setenv("VOICE_WHISPER_MODEL", "small.en")
-    monkeypatch.setenv("VOICE_LLM_BACKEND", "claude")
-    monkeypatch.setenv("VOICE_CORRECTION_BACKEND", "claude")
-    monkeypatch.setenv("VOICE_PROCESS_BACKEND", "claude")
-    monkeypatch.setenv("VOICE_CORRECTION_OLLAMA_MODEL", "not-used")
-    monkeypatch.setenv("VOICE_PROCESS_OLLAMA_MODEL", "not-used")
-    monkeypatch.setattr("sys.argv", ["voice", "--default"])
+    monkeypatch.delenv("VOICE_LLM_BACKEND", raising=False)
+    monkeypatch.delenv("VOICE_OLLAMA_MODEL", raising=False)
+    monkeypatch.delenv("VOICE_DEEPGRAM_MODEL", raising=False)
+    monkeypatch.setattr("sys.argv", ["voice", "--llm-backend", "claude"])
 
     args = cli.parse_args()
 
-    assert args.stt_backend == "faster-whisper"
-    assert args.whisper_model == cli.DEFAULT_MODEL
-    assert args.correction_backend == "ollama"
-    assert args.process_backend == "ollama"
-    assert args.correction_ollama_model == cli.DEFAULT_OLLAMA_MODEL
-    assert args.process_ollama_model == cli.DEFAULT_OLLAMA_MODEL
+    assert args.llm_backend == "claude"
+    assert args.deepgram_model == "flux-general-en"
+    assert args.debug_protocol is False
 
 
-def test_parse_args_uses_llm_backend_as_fallback(monkeypatch):
+def test_parse_args_env_overrides(monkeypatch):
     cli = _load_cli()
-
     monkeypatch.setenv("VOICE_LLM_BACKEND", "ollama")
-    monkeypatch.delenv("VOICE_CORRECTION_BACKEND", raising=False)
-    monkeypatch.delenv("VOICE_PROCESS_BACKEND", raising=False)
-    monkeypatch.setenv("VOICE_OLLAMA_MODEL", "qwen2.5:7b-instruct")
-    monkeypatch.delenv("VOICE_CORRECTION_OLLAMA_MODEL", raising=False)
-    monkeypatch.delenv("VOICE_PROCESS_OLLAMA_MODEL", raising=False)
-    monkeypatch.setattr("sys.argv", ["voice", "--stt-backend", "faster-whisper"])
+    monkeypatch.setenv("VOICE_OLLAMA_MODEL", "llama3")
+    monkeypatch.setenv("VOICE_DEEPGRAM_MODEL", "flux-general-multi")
+    monkeypatch.setattr("sys.argv", ["voice", "--llm-backend", "ollama"])
 
     args = cli.parse_args()
 
-    assert args.correction_backend == "ollama"
-    assert args.process_backend == "ollama"
-    assert args.correction_ollama_model == "qwen2.5:7b-instruct"
-    assert args.process_ollama_model == "qwen2.5:7b-instruct"
+    assert args.llm_backend == "ollama"
+    assert args.ollama_model == "llama3"
+    assert args.deepgram_model == "flux-general-multi"
+
+
+def test_get_api_key_missing(monkeypatch):
+    cli = _load_cli()
+    monkeypatch.delenv("DEEPGRAM_API_KEY", raising=False)
+
+    with_exit = False
+    try:
+        cli._get_api_key()
+    except SystemExit:
+        with_exit = True
+
+    assert with_exit, "should exit when DEEPGRAM_API_KEY is not set"
+
+
+def test_get_api_key_present(monkeypatch):
+    cli = _load_cli()
+    monkeypatch.setenv("DEEPGRAM_API_KEY", "test-key-123")
+
+    key = cli._get_api_key()
+    assert key == "test-key-123"
