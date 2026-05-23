@@ -105,6 +105,7 @@ def run_push_to_talk_session(
             nonlocal final_transcript
             try:
                 for message in socket:
+                    print(f"  [deepgram msg] {type(message).__name__}: {message!r}", flush=True)
                     if isinstance(message, ListenV2TurnInfo):
                         text = message.transcript.strip()
                         if text:
@@ -112,12 +113,13 @@ def run_push_to_talk_session(
                             print(_CLEAR + text, end="", flush=True)
                             if on_partial:
                                 on_partial(text)
-            except Exception:
-                pass
+            except Exception as e:
+                print(f"  [deepgram recv error] {e}", flush=True)
 
         recv_thread = threading.Thread(target=_receive_loop, daemon=True)
         recv_thread.start()
 
+        chunks_sent = 0
         with sd.InputStream(
             samplerate=SAMPLE_RATE,
             channels=CHANNELS,
@@ -129,10 +131,11 @@ def run_push_to_talk_session(
                 try:
                     chunk = audio_queue.get(timeout=0.1)
                     socket.send_media(chunk)
+                    chunks_sent += 1
                 except queue.Empty:
                     pass
 
-            print("\n  Stopped. Waiting for final transcript...", flush=True)
+            print(f"\n  Stopped. Sent {chunks_sent} audio chunks. Waiting for final transcript...", flush=True)
             while not audio_queue.empty():
                 try:
                     chunk = audio_queue.get_nowait()
