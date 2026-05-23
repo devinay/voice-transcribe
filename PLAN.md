@@ -9,9 +9,9 @@
 
 - Current code structure:
 - `voice.py` — thin entrypoint only; imports `main` from `cli.py`.
-- `cli.py` — argument parsing, config display, `prompt_review`, `main` loop.
+- `cli.py` — argument parsing, config display, backend setup, handoff into Loop 1, final save call.
 - `audio.py` — recording, live streaming decode, display helpers.
-- `stt.py` — STT backend loaders (`faster-whisper`, `mlx-whisper`), `write_wav`.
+- `stt.py` — STT backend loaders (`faster-whisper`, `mlx-whisper`, `granite-speech`), `write_wav`.
 - `llm.py` — LLM backend runners (`claude`, `ollama`), `correct_with_llm`.
 - `prompts.py` — `process_prompt.md` loading and template rendering.
 - `storage.py` — `process_and_save`: LLM processing, file naming, save to `~/transcript/`.
@@ -19,12 +19,16 @@
 - `index_cmd.py` — `voice-index` CLI for backfilling existing transcripts.
 - `config.py` — all constants and default values.
 - `process_prompt.md` — LLM prompt template for structured output.
+- `loops/conversational.py` — Loop 1 extracted from the old `cli.py`: record → review → add/correct/exit.
+- `agents/` — package exists but no concrete agents implemented yet.
+- `tools/` — package exists but no concrete external tool wrappers implemented yet.
 
 - Current STT behavior:
-- STT backends supported: `faster-whisper` and `mlx-whisper`.
+- STT backends supported: `faster-whisper`, `mlx-whisper`, and `granite-speech`.
 - STT is selected by `--stt-backend`.
 - `faster-whisper` default model: `medium.en`.
 - `mlx-whisper` default model: `mlx-community/whisper-small.en-mlx`.
+- `granite-speech` default model: `ibm-granite/granite-speech-4.1-2b`.
 - Recording/transcription path currently uses continuous streaming decode over a rolling window in `record_and_transcribe_live(...)`.
 
 - Current LLM behavior:
@@ -42,9 +46,10 @@
 
 - Current CLI/options state:
 - `--default` preset supported.
-- `--stt-backend {faster-whisper,mlx-whisper}`
+- `--stt-backend {faster-whisper,mlx-whisper,granite-speech}`
 - `--whisper-model ...`
 - `--mlx-model ...`
+- `--granite-model ...`
 - `--correction-backend {claude,ollama}`
 - `--process-backend {claude,ollama}`
 - `--correction-ollama-model ...`
@@ -54,25 +59,24 @@
 - Current known issues/constraints:
 - Audio + interactive loop remains complex and lightly unit-tested due to hardware/TTY interaction.
 - Vector index is live; `on_doc_saved` is called after every save and is no longer a no-op.
+- Structural Refactor is complete: `loops/conversational.py` (Loop 1) and `loops/agent.py` (Loop 2) are both implemented.
+- `agents/` and `tools/` packages exist as scaffolding only; Phase 3 still needs concrete diagram agent and D2 tool modules.
 - README and code need to stay aligned as refactor progresses.
 
 ## Planned
 
 ### Structural Refactor: Two-Loop Architecture
 
-Before Phase 3. No behavior change — makes the two loops explicit in the code.
+**Complete.** Both loops are implemented and Loop 1 is in production use.
 
-**New packages:**
-- `loops/conversational.py` — Loop 1. Extracts the record→review→add/correct/exit loop from `cli.py`. `run(transcribe_fn, correction_backend, correction_ollama_model) -> str`.
-- `loops/agent.py` — Loop 2. Generic text-based agent loop. Sends a growing context to the LLM, parses fenced JSON tool-call blocks from the response, executes the matching function, appends the result, repeats until no tool call appears. `run(system_prompt, initial_message, tools, tool_fns, llm_backend, ollama_model) -> str`.
-- `agents/` — one module per agent, each owning its system prompt, tool schemas, and tool functions; calls `loops.agent.run()`.
-- `tools/` — thin wrappers around external CLI tools (D2, etc).
+**Done:**
+- `loops/conversational.py` — Loop 1. Record→review→add/correct/exit. Used by `cli.py`.
+- `loops/agent.py` — Loop 2. Generic fenced-JSON tool-call loop. `run(system_prompt, initial_message, tools, tool_fns, llm_backend, ollama_model) -> str`.
+- `agents/` and `tools/` packages — created as scaffolding for Phase 3.
 
 **Tool call convention (no new SDK):** LLM signals a tool call with a fenced JSON block; absence of that block ends the loop.
 
-**`cli.py` after refactor:** `loops.conversational.run()` → `storage.process_and_save()` → diagram suggestion flow → display markdown.
-
-Exit criteria: existing behavior unchanged; code structure clearly separates Loop 1 and Loop 2.
+**`cli.py` current flow:** `loops.conversational.run()` → `storage.process_and_save()` → exit. Diagram suggestion flow and markdown display are Phase 3 additions.
 
 ### Phase 3: Diagram Agent
 

@@ -238,7 +238,7 @@ All CLI options can also be set via environment variables:
 ```
 src/voice_transcribe/
 ├── voice.py          # thin entrypoint — imports main from cli.py
-├── cli.py            # argument parsing, config display, prompt_review, main loop
+├── cli.py            # argument parsing, config display, backend setup, top-level orchestration
 ├── audio.py          # recording, live streaming decode, display helpers
 ├── stt.py            # STT backend loaders (faster-whisper, mlx-whisper, granite-speech)
 ├── llm.py            # LLM backend runners (claude, ollama), correct_with_llm
@@ -247,6 +247,9 @@ src/voice_transcribe/
 ├── vector.py         # LanceDB vector index: embed summaries, assign similarity colors
 ├── index_cmd.py      # voice-index CLI: backfill index for existing transcripts
 ├── config.py         # all constants and default values
+├── loops/            # conversational loop today; generic agent loop planned
+├── agents/           # agent modules (planned; package scaffold exists)
+├── tools/            # external tool wrappers such as D2 (planned; package scaffold exists)
 └── process_prompt.md # LLM prompt template for structured output
 ```
 
@@ -281,12 +284,23 @@ Current unit tests cover:
 - Prompt template substitution (`tests/test_prompts.py`)
 - Save/index flow wiring in `storage.process_and_save` (`tests/test_storage.py`)
 
-## Roadmap Notes (Phase 2/3)
+## Roadmap Notes
 
-- Phase 2 will add a local LanceDB vector index based only on generated `Summary` content (not raw transcript/headers).
-- Similar documents will share a persisted color chosen from a fixed internal palette of 64 colors.
-- Phase 3 will optionally create Google Calendar events from `Next Actions` after markdown generation:
-  - prompt user for confirmation before creating events
-  - schedule for today starting 9:00 AM in 30-minute slots with 15-minute gaps
-  - include action text as title, plus Drive link and source context in description
-- Note: Google Calendar event colors are API-limited to Google color IDs, so internal palette colors will be mapped to the closest supported Calendar color when creating events.
+Current completed foundation:
+- Phase 1 refactor is done: the original monolith has been split into modules.
+- Phase 2 vector indexing is done: only the generated `Summary` is embedded and stored in LanceDB after each save.
+- Similar documents share a persisted color chosen from a fixed internal palette of 64 colors.
+
+Current in-progress architectural direction:
+- Loop 1 is already extracted into `loops/conversational.py`.
+- The next structural step is a generic Loop 2 agent runner plus concrete agents and tool wrappers.
+
+Next planned feature work:
+- Phase 3 is the diagram agent.
+- After a transcript is processed and saved, the app will optionally suggest diagrams.
+- Accepted diagrams will be generated with D2 into a per-session directory and embedded into the markdown.
+
+Later planned workflow:
+- Google Drive snapshot sync for the vector store.
+- Optional Google Calendar event creation from `## Next Actions`.
+- Internal similarity colors will be mapped to the closest supported Google Calendar color where needed.
