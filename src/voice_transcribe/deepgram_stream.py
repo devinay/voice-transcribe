@@ -94,19 +94,24 @@ def run_push_to_talk_session(
         def _receive_loop() -> None:
             nonlocal final_transcript
             try:
+                cols = os.get_terminal_size().columns - 4
+            except OSError:
+                cols = 76
+            try:
                 for message in socket:
                     if not isinstance(message, dict) or message.get("type") != "TurnInfo":
                         continue
                     text = message.get("transcript", "").strip()
                     event = message.get("event", "")
                     if text and event in ("Update", "StartOfTurn"):
-                        # overwrite current transcript line
-                        print(_CLEAR + "  " + text, end="", flush=True)
+                        display = text if len(text) <= cols else "…" + text[-(cols - 1):]
+                        print("\r  " + display.ljust(cols), end="", flush=True)
                         if on_partial:
                             on_partial(text)
                     elif event == "EndOfTurn" and text:
                         final_transcript = text
-                        print(_CLEAR + "  " + text, end="", flush=True)
+                        display = text if len(text) <= cols else "…" + text[-(cols - 1):]
+                        print("\r  " + display.ljust(cols), end="", flush=True)
             except Exception:
                 pass
 
