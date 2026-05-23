@@ -9,7 +9,7 @@
 
 - Current code structure:
 - `voice.py` — thin entrypoint only; imports `main` from `cli.py`.
-- `cli.py` — argument parsing, config display, backend setup, handoff into Loop 1, final save call.
+- `cli.py` — argument parsing, config display, backend setup, handoff into conversational loop, final save call.
 - `audio.py` — recording, live streaming decode, display helpers.
 - `stt.py` — STT backend loaders (`faster-whisper`, `mlx-whisper`, `granite-speech`), `write_wav`.
 - `llm.py` — LLM backend runners (`claude`, `ollama`), `correct_with_llm`.
@@ -20,8 +20,9 @@
 - `config.py` — all constants and default values.
 - `process_prompt.md` — LLM prompt template for structured output.
 - `loops/conversational.py` — Loop 1 extracted from the old `cli.py`: record → review → add/correct/exit.
-- `agents/` — package exists but no concrete agents implemented yet.
-- `tools/` — package exists but no concrete external tool wrappers implemented yet.
+- `loops/agent.py` — generic fenced-JSON agent loop used by concrete agents.
+- `agents/diagram.py` — diagram-generation agent that iterates on D2 syntax until render succeeds.
+- `tools/d2.py` — D2 CLI wrapper used by the diagram agent.
 
 - Current STT behavior:
 - STT backends supported: `faster-whisper`, `mlx-whisper`, and `granite-speech`.
@@ -59,58 +60,77 @@
 - Current known issues/constraints:
 - Audio + interactive loop remains complex and lightly unit-tested due to hardware/TTY interaction.
 - Vector index is live; `on_doc_saved` is called after every save and is no longer a no-op.
-- Structural Refactor is complete: `loops/conversational.py` (Loop 1) and `loops/agent.py` (Loop 2) are both implemented.
-- `agents/` and `tools/` packages exist as scaffolding only; Phase 3 still needs concrete diagram agent and D2 tool modules.
+- The old “two-loop” framing is superseded. Current code has a conversational loop plus a generic agent loop, but the single conversation-loop orchestrator/state-machine design is not implemented yet.
+- Phase 3 diagram generation is implemented, but it is still invoked as a post-save flow rather than through the planned single-loop orchestrator/state-machine.
 - README and code need to stay aligned as refactor progresses.
 
 ## Planned
 
-### Structural Refactor: Two-Loop Architecture
+### Structural Refactor: Single Conversation Loop Orchestrator
 
-**Complete.** Both loops are implemented and Loop 1 is in production use.
+Replace the old “Loop 1 / Loop 2” model with one user-facing voice conversation loop and an internal orchestrator state machine.
 
-**Done:**
-- `loops/conversational.py` — Loop 1. Record→review→add/correct/exit. Used by `cli.py`.
-- `loops/agent.py` — Loop 2. Generic fenced-JSON tool-call loop. `run(system_prompt, initial_message, tools, tool_fns, llm_backend, ollama_model) -> str`.
-- `agents/` and `tools/` packages — created as scaffolding for Phase 3.
+**Target user experience:**
+- User speaks.
+- STT surfaces live partial transcript.
+- End of turn is detected.
+- LLM replies in text.
+- Conversation repeats until a plan is agreed on and confirmed.
+- When execution is needed, the orchestrator triggers the right agent without changing the user-visible loop.
+- If an agent needs clarification, control returns to the same conversation loop with the prior plan/context preserved.
 
-**Tool call convention (no new SDK):** LLM signals a tool call with a fenced JSON block; absence of that block ends the loop.
+**Internal orchestrator model:**
+- One continuous conversation loop with internal states instead of separate user-visible loops.
+- Expected core states:
+- `discussing`
+- `confirming`
+- `executing_agent`
+- `resolving_agent_question`
+- `completed`
 
-**`cli.py` current flow:** `loops.conversational.run()` → `storage.process_and_save()` → exit. Diagram suggestion flow and markdown display are Phase 3 additions.
+**State tracked by the orchestrator:**
+- `conversation_state`
+- `current_plan`
+- `confirmation_status`
+- `active_agent`
+- `agent_context`
 
-### Phase 3: Diagram Agent
+**Structured LLM output contract:**
+Each turn should yield structured fields that the orchestrator can interpret, for example:
+- `assistant_message`
+- `state`
+- `needs_confirmation`
+- `agent_to_trigger`
+- `agent_input`
+- `questions_for_user`
 
-**Output layout:** `process_and_save` now creates a named directory instead of a flat file:
+The orchestrator, not the raw conversational loop, decides whether to:
+- continue discussing
+- ask for confirmation
+- trigger an agent
+- return from an agent back into discussion
+- finalize the workflow
 
-```
-~/transcript/
-  some_five_word_name/
-    some_five_word_name.md
-    deployment_sequence.png
-    architecture_overview.png
-```
+**Status so far:**
+- `loops/conversational.py` exists and owns the current record → review → add/correct/exit flow.
+- `loops/agent.py` exists as a generic fenced-JSON agent loop.
+- `agents/diagram.py` exists as the first concrete agent.
+- `tools/d2.py` exists as the first concrete external tool wrapper.
 
-Markdown image references use relative paths (`![label](filename.png)`), making the session directory self-contained and portable. `storage.py` updated to write into the directory instead of a flat `.md`.
+**Remaining work:**
+- Refactor the current conversational loop into a reusable single-loop orchestrator entrypoint.
+- Add a generic orchestrator/state-machine module responsible for mode transitions and structured LLM response handling.
+- Extend concrete agents under `agents/` beyond the current diagram agent.
+- Extend tool wrappers under `tools/` beyond the current D2 renderer.
+- Preserve the text-only assistant response model; no TTS is required.
 
-**Trigger:** After `process_and_save`, the LLM reads the saved markdown and responds with a list of diagrams it thinks would be useful (or none). Each entry has a short label and a description of what the diagram should show.
+**`cli.py` target after refactor:**
+- Start one conversation loop.
+- Use orchestrator state to decide whether the system is discussing, confirming, executing an agent, or resolving an agent question.
+- When a plan is confirmed, trigger the relevant agent.
+- Continue in the same conversation loop if the agent needs more user input.
 
-**Per-diagram flow (repeats for each suggestion):**
-1. CLI prints: `Suggested: "Deployment sequence" — steps from build to prod. Add it? [y/N]`
-2. If yes: `agents.diagram.run(description, session_dir, llm_backend, ollama_model) -> Path`
-3. Agent loop: LLM generates D2 syntax → `tools.d2.render()` → result (success + any errors) fed back → LLM refines → repeats until satisfied.
-4. On success: PNG saved into the session directory; image reference embedded in the markdown file.
-
-**`tools/d2.py`:** `render(syntax, output_path) -> dict` — `d2 - <output>` with syntax on stdin. Returns `{success, image_path}` or `{success, error}`. Clear error if `d2` not installed.
-
-**`agents/diagram.py`:** owns D2 system prompt (node/edge/shape/direction guide), single `render_d2` tool. Uses same `--process-backend` and `--process-ollama-model` as the rest of the pipeline.
-
-**Display:** After all diagrams are resolved, the final markdown is rendered to the terminal using `rich`. Image lines show as `[image]` placeholders (terminal can't render pixels).
-
-**Vision feedback loop** (render PNG → feed image to vision model for critique): deferred — requires image-input support not in the current subprocess path.
-
-**New dependency:** `rich>=13.0`
-
-Exit criteria: given a transcript, the LLM suggests relevant diagrams, user can accept/decline each, accepted ones are rendered with D2 and embedded in the session directory markdown.
+Exit criteria: the user experiences a single continuous conversation while the orchestrator manages internal state transitions and agent execution behind the scenes.
 
 ### Phase 4: Google Drive Snapshot Sync
 - Add Drive client for upload/download of vector snapshot + manifest.
@@ -176,6 +196,21 @@ Two use cases driving this: (1) a record button instead of SPACE, and (2) a simi
 - Preserve phase boundaries; complete one phase at a time unless user overrides.
 
 ## Completed
+
+### Phase 3: Diagram Agent — 2026-05-23
+- `storage.process_and_save(...)` now writes a self-contained session directory under `~/transcript/<name>/` instead of a flat markdown file.
+- Session directory contains the main markdown file plus any generated diagram images.
+- `loops/agent.py` implemented: generic fenced-JSON tool-call loop for LLM-driven tool use.
+- `tools/d2.py` implemented: renders D2 syntax from stdin to an output image path and returns structured success/error results.
+- `agents/diagram.py` implemented: diagram-generation agent that iterates on D2 syntax and retries renders up to a bounded attempt count.
+- `cli.py` includes post-save diagram flow:
+- asks the LLM for diagram suggestions from the saved markdown
+- prompts the user to accept/decline each suggestion
+- runs the diagram agent for accepted suggestions
+- supports voice-guided diagram refinement after initial render
+- logs diagram-session events to `session.log`
+- final markdown is displayed with `rich` after the diagram flow completes
+- Diagram generation is complete as a post-save workflow, but is not yet integrated into the planned single conversation-loop orchestrator/state machine.
 
 ### Phase 2: Summary-Only Vector Foundation (Local) — 2026-03-04
 - `vector.py` fully implemented: LanceDB storage, sentence-transformers embeddings (`all-MiniLM-L6-v2`, 384-dim).

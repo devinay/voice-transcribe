@@ -247,9 +247,9 @@ src/voice_transcribe/
 ├── vector.py         # LanceDB vector index: embed summaries, assign similarity colors
 ├── index_cmd.py      # voice-index CLI: backfill index for existing transcripts
 ├── config.py         # all constants and default values
-├── loops/            # conversational loop today; generic agent loop planned
-├── agents/           # agent modules (planned; package scaffold exists)
-├── tools/            # external tool wrappers such as D2 (planned; package scaffold exists)
+├── loops/            # conversational loop plus generic agent loop
+├── agents/           # agent modules, including the diagram agent
+├── tools/            # external tool wrappers, including D2 rendering
 └── process_prompt.md # LLM prompt template for structured output
 ```
 
@@ -289,16 +289,16 @@ Current unit tests cover:
 Current completed foundation:
 - Phase 1 refactor is done: the original monolith has been split into modules.
 - Phase 2 vector indexing is done: only the generated `Summary` is embedded and stored in LanceDB after each save.
+- Phase 3 diagram generation is done: transcripts are saved into per-session directories, diagrams can be suggested by the LLM, rendered with D2, refined, and embedded into the session output.
 - Similar documents share a persisted color chosen from a fixed internal palette of 64 colors.
 
 Current in-progress architectural direction:
-- Loop 1 is already extracted into `loops/conversational.py`.
-- The next structural step is a generic Loop 2 agent runner plus concrete agents and tool wrappers.
+- `loops/conversational.py` and `loops/agent.py` both exist today.
+- The next structural step is to replace the old “two-loop” framing with a single conversation-loop orchestrator/state machine for discussion, confirmation, and agent execution.
 
 Next planned feature work:
-- Phase 3 is the diagram agent.
-- After a transcript is processed and saved, the app will optionally suggest diagrams.
-- Accepted diagrams will be generated with D2 into a per-session directory and embedded into the markdown.
+- Refactor the interaction model into one continuous conversation loop with internal states such as discussing, confirming, executing an agent, and resolving agent questions.
+- Reuse that same conversation model for future agent-triggered workflows instead of handing off to separate user-visible loops.
 
 Later planned workflow:
 - Google Drive snapshot sync for the vector store.
