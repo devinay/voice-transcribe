@@ -91,6 +91,7 @@ def run_push_to_talk_session(
             audio_queue.put(pcm)
 
     final_transcript = ""
+    print("  Connecting to Deepgram...", flush=True)
     client = DeepgramClient(api_key=api_key)
 
     with client.listen.v2.connect(
@@ -98,6 +99,7 @@ def run_push_to_talk_session(
         encoding="linear16",
         sample_rate=SAMPLE_RATE,
     ) as socket:
+        print("  Connected. Streaming audio...", flush=True)
 
         def _receive_loop() -> None:
             nonlocal final_transcript
@@ -130,6 +132,7 @@ def run_push_to_talk_session(
                 except queue.Empty:
                     pass
 
+            print("\n  Stopped. Waiting for final transcript...", flush=True)
             while not audio_queue.empty():
                 try:
                     chunk = audio_queue.get_nowait()
@@ -137,9 +140,11 @@ def run_push_to_talk_session(
                 except queue.Empty:
                     break
 
+        print("  Closing stream...", flush=True)
         socket.send_close_stream()
         recv_thread.join(timeout=5.0)
         key_thread.join(timeout=1.0)
+        print("  Done.", flush=True)
 
     print(flush=True)
     return final_transcript
