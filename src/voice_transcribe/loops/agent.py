@@ -14,10 +14,12 @@ def run(
     tool_fns: dict[str, Callable[..., Any]],
     llm_backend: str,
     ollama_model: str,
+    max_iterations: int = 0,
 ) -> str:
     """Generic agent loop: send context to LLM, parse fenced JSON tool calls, repeat.
 
-    Terminates when the LLM response contains no tool-call block.
+    Terminates when the LLM response contains no tool-call block, or after
+    max_iterations LLM turns (0 = unlimited).
     Returns the final LLM response text.
     """
     context = (
@@ -32,8 +34,13 @@ def run(
         "Assistant:"
     )
 
+    iterations = 0
     while True:
+        if max_iterations and iterations >= max_iterations:
+            return context  # caller inspects last_result instead
+
         response = run_llm_prompt(context, llm_backend, ollama_model)
+        iterations += 1
 
         match = _TOOL_BLOCK_RE.search(response)
         if not match:
