@@ -101,14 +101,17 @@ def run_push_to_talk_session(
 
         def _receive_loop() -> None:
             nonlocal final_transcript
-            for message in socket:
-                if isinstance(message, ListenV2TurnInfo):
-                    text = message.transcript.strip()
-                    if text:
-                        final_transcript = text
-                        print(_CLEAR + text, end="", flush=True)
-                        if on_partial:
-                            on_partial(text)
+            try:
+                for message in socket:
+                    if isinstance(message, ListenV2TurnInfo):
+                        text = message.transcript.strip()
+                        if text:
+                            final_transcript = text
+                            print(_CLEAR + text, end="", flush=True)
+                            if on_partial:
+                                on_partial(text)
+            except Exception:
+                pass
 
         recv_thread = threading.Thread(target=_receive_loop, daemon=True)
         recv_thread.start()

@@ -31,8 +31,11 @@ class _StderrTee:
         return len(data)
 
     def flush(self) -> None:
-        self._orig.flush()
-        self._log.flush()
+        try:
+            self._orig.flush()
+            self._log.flush()
+        except Exception:
+            pass
 
     def fileno(self) -> int:
         return self._orig.fileno()
