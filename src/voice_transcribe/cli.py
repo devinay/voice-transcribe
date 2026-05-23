@@ -7,6 +7,7 @@ import tempfile
 
 from voice_transcribe.audio import _CLEAR, _RED, _RESET, clear_screen, highlight_diff, record_and_transcribe_live
 from voice_transcribe.config import (
+    DEFAULT_GRANITE_MODEL,
     DEFAULT_LLM_BACKEND,
     DEFAULT_MLX_MODEL,
     DEFAULT_MODEL,
@@ -52,7 +53,7 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument(
         "--stt-backend",
-        choices=["faster-whisper", "mlx-whisper"],
+        choices=["faster-whisper", "mlx-whisper", "granite-speech"],
         default=os.getenv("VOICE_STT_BACKEND", "faster-whisper"),
         help="Speech-to-text backend.",
     )
@@ -65,6 +66,11 @@ def parse_args() -> argparse.Namespace:
         "--mlx-model",
         default=os.getenv("VOICE_MLX_MODEL", DEFAULT_MLX_MODEL),
         help="mlx-whisper model id to use when --stt-backend=mlx-whisper.",
+    )
+    parser.add_argument(
+        "--granite-model",
+        default=os.getenv("VOICE_GRANITE_MODEL", DEFAULT_GRANITE_MODEL),
+        help="Granite Speech model id to use when --stt-backend=granite-speech.",
     )
     parser.add_argument(
         "--correction-backend",
@@ -106,6 +112,7 @@ def _print_config(args: argparse.Namespace) -> None:
     print(f"  --stt-backend               {args.stt_backend}")
     print(f"  --whisper-model             {args.whisper_model}")
     print(f"  --mlx-model                 {args.mlx_model}")
+    print(f"  --granite-model             {args.granite_model}")
     print(f"  --correction-backend        {args.correction_backend}")
     print(f"  --correction-ollama-model   {args.correction_ollama_model}")
     print(f"  --process-backend           {args.process_backend}")
@@ -156,13 +163,16 @@ def main() -> None:
         stt_backend=args.stt_backend,
         faster_model_size=args.whisper_model,
         mlx_model_id=args.mlx_model,
+        granite_model_id=args.granite_model,
     )
     clear_screen()
     print(f"STT backend: {args.stt_backend}", flush=True)
     if args.stt_backend == "faster-whisper":
         print(f"Whisper model: {args.whisper_model}", flush=True)
-    else:
+    elif args.stt_backend == "mlx-whisper":
         print(f"MLX model: {args.mlx_model}", flush=True)
+    elif args.stt_backend == "granite-speech":
+        print(f"Granite model: {args.granite_model}", flush=True)
     print(f"Correction backend: {args.correction_backend}", flush=True)
     if args.correction_backend == "ollama":
         print(f"Correction model: {args.correction_ollama_model}", flush=True)

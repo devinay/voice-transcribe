@@ -8,7 +8,7 @@ import torch
 from faster_whisper import WhisperModel
 from transformers import AutoModelForSeq2SeqLM, AutoTokenizer
 
-from voice_transcribe.config import CHANNELS, DEFAULT_MLX_MODEL, DEFAULT_MODEL, SAMPLE_RATE
+from voice_transcribe.config import CHANNELS, DEFAULT_GRANITE_MODEL, DEFAULT_MLX_MODEL, DEFAULT_MODEL, SAMPLE_RATE
 
 
 def write_wav(path: pathlib.Path, audio: np.ndarray) -> None:
@@ -37,8 +37,52 @@ def load_summariser():
 
 
 def load_transcriber(
-    stt_backend: str, faster_model_size: str = DEFAULT_MODEL, mlx_model_id: str = DEFAULT_MLX_MODEL
+    stt_backend: str,
+    faster_model_size: str = DEFAULT_MODEL,
+    mlx_model_id: str = DEFAULT_MLX_MODEL,
+    granite_model_id: str = DEFAULT_GRANITE_MODEL,
 ) -> Callable[[np.ndarray], list[str]]:
+    if stt_backend == "granite-speech":
+        from transformers import AutoModelForSpeechSeq2Seq, AutoProcessor
+
+        if torch.backends.mps.is_available():
+            device = "mps"
+            torch_dtype = torch.float16
+        elif torch.cuda.is_available():
+            device = "cuda"
+            torch_dtype = torch.bfloat16
+        else:
+            device = "cpu"
+            torch_dtype = torch.float32
+
+        print(
+            f"Loading granite-speech model '{granite_model_id}' on {device} "
+            "(first run will download weights ~4GB) ...",
+            flush=True,
+        )
+        processor = AutoProcessor.from_pretrained(granite_model_id)
+        tokenizer = processor.tokenizer
+        model = AutoModelForSpeechSeq2Seq.from_pretrained(
+            granite_model_id, dtype=torch_dtype
+        ).to(device)
+
+        chat = [{"role": "user", "content": "<|audio|>transcribe the speech with proper punctuation and capitalization."}]
+        prompt = tokenizer.apply_chat_template(chat, tokenize=False, add_generation_prompt=True)
+
+        print("granite-speech transcriber ready.\n", flush=True)
+
+        def transcribe_chunk(audio_chunk: np.ndarray) -> list[str]:
+            wav = torch.from_numpy(audio_chunk.flatten().astype(np.float32)).unsqueeze(0)
+            model_inputs = processor(prompt, wav, device=device, return_tensors="pt").to(device)
+            with torch.no_grad():
+                model_outputs = model.generate(**model_inputs, max_new_tokens=200, do_sample=False)
+            num_input_tokens = model_inputs["input_ids"].shape[-1]
+            new_tokens = model_outputs[0, num_input_tokens:].unsqueeze(0)
+            text = tokenizer.batch_decode(new_tokens, skip_special_tokens=True)[0].strip()
+            return [text] if text else []
+
+        return transcribe_chunk
+
     if stt_backend == "mlx-whisper":
         try:
             import mlx_whisper

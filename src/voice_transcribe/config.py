@@ -12,6 +12,7 @@ MIN_STREAM_AUDIO_SECONDS = 0.8
 # Model sizes: tiny | base | small | medium | large
 DEFAULT_MODEL = "medium.en"
 DEFAULT_MLX_MODEL = "mlx-community/whisper-small.en-mlx"
+DEFAULT_GRANITE_MODEL = "ibm-granite/granite-speech-4.1-2b"
 
 TRANSCRIPT_DIR = pathlib.Path.home() / "transcript"
 IDLE_TIMEOUT = 300  # seconds of inactivity before auto-save and exit (5 minutes)
