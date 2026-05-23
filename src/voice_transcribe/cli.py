@@ -4,12 +4,16 @@ import os
 import pathlib
 import sys
 
+from dotenv import load_dotenv
+
+load_dotenv()
+
 from voice_transcribe.config import (
     DEFAULT_LLM_BACKEND,
     DEFAULT_OLLAMA_MODEL,
     LOG_FILE,
 )
-from voice_transcribe.deepgram_stream import DEFAULT_DEEPGRAM_MODEL
+from voice_transcribe.deepgram_stream import DEFAULT_DEEPGRAM_MODEL as _DEEPGRAM_MODEL
 
 
 class _StderrTee:
@@ -52,15 +56,9 @@ def parse_args() -> argparse.Namespace:
         env_backend = DEFAULT_LLM_BACKEND
 
     env_ollama_model = os.getenv("VOICE_OLLAMA_MODEL", DEFAULT_OLLAMA_MODEL)
-    env_deepgram_model = os.getenv("VOICE_DEEPGRAM_MODEL", DEFAULT_DEEPGRAM_MODEL)
 
     parser = argparse.ArgumentParser(
         description="Voice transcription and conversation tool (Deepgram STT)."
-    )
-    parser.add_argument(
-        "--deepgram-model",
-        default=env_deepgram_model,
-        help=f"Deepgram model to use for STT (default: {DEFAULT_DEEPGRAM_MODEL}).",
     )
     parser.add_argument(
         "--llm-backend",
@@ -83,19 +81,28 @@ def parse_args() -> argparse.Namespace:
 
 
 def _print_config(args: argparse.Namespace) -> None:
+    api_key_set = bool(os.getenv("DEEPGRAM_API_KEY", "").strip())
+    api_key_status = "set" if api_key_set else "NOT SET (required)"
+
+    print("voice — Deepgram-powered conversation tool")
+    print()
     print("Effective configuration:")
-    print(f"  --deepgram-model   {args.deepgram_model}")
+    print(f"  STT                Deepgram {_DEEPGRAM_MODEL}")
     print(f"  --llm-backend      {args.llm_backend}")
-    if args.llm_backend == "ollama":
-        print(f"  --ollama-model     {args.ollama_model}")
+    print(f"  --ollama-model     {args.ollama_model}")
+    print(f"  --debug-protocol   {args.debug_protocol}")
     print()
     print("Environment variables:")
-    print("  DEEPGRAM_API_KEY   (required)")
-    print("  VOICE_DEEPGRAM_MODEL")
-    print("  VOICE_LLM_BACKEND")
-    print("  VOICE_OLLAMA_MODEL")
+    print(f"  DEEPGRAM_API_KEY   {api_key_status}")
+    print(f"  VOICE_LLM_BACKEND  (default: claude)")
+    print(f"  VOICE_OLLAMA_MODEL (default: {DEFAULT_OLLAMA_MODEL})")
     print()
-    print("Run 'voice --help' for all options.")
+    print("Usage:")
+    print("  voice --llm-backend claude         # start conversation (Claude LLM)")
+    print("  voice --llm-backend ollama         # start conversation (Ollama LLM)")
+    print("  voice --debug-protocol --llm-backend claude  # show protocol JSON")
+    print()
+    print("Run 'voice --help' for full option descriptions.")
 
 
 def main() -> None:
@@ -114,14 +121,14 @@ def main() -> None:
     from voice_transcribe.loops.conversation_session import run as run_session
 
     clear_screen()
-    print(f"STT: Deepgram {args.deepgram_model}", flush=True)
+    print(f"STT: Deepgram {_DEEPGRAM_MODEL}", flush=True)
     print(f"LLM: {args.llm_backend}", flush=True)
     if args.llm_backend == "ollama":
         print(f"Ollama model: {args.ollama_model}", flush=True)
 
     run_session(
         api_key=api_key,
-        deepgram_model=args.deepgram_model,
+        deepgram_model=_DEEPGRAM_MODEL,
         llm_backend=args.llm_backend,
         ollama_model=args.ollama_model,
     )

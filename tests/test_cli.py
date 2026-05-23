@@ -10,13 +10,12 @@ def test_parse_args_defaults(monkeypatch):
     cli = _load_cli()
     monkeypatch.delenv("VOICE_LLM_BACKEND", raising=False)
     monkeypatch.delenv("VOICE_OLLAMA_MODEL", raising=False)
-    monkeypatch.delenv("VOICE_DEEPGRAM_MODEL", raising=False)
     monkeypatch.setattr("sys.argv", ["voice", "--llm-backend", "claude"])
 
     args = cli.parse_args()
 
     assert args.llm_backend == "claude"
-    assert args.deepgram_model == "flux-general-en"
+    assert args.ollama_model == "qwen2.5:7b-instruct"
     assert args.debug_protocol is False
 
 
@@ -24,14 +23,12 @@ def test_parse_args_env_overrides(monkeypatch):
     cli = _load_cli()
     monkeypatch.setenv("VOICE_LLM_BACKEND", "ollama")
     monkeypatch.setenv("VOICE_OLLAMA_MODEL", "llama3")
-    monkeypatch.setenv("VOICE_DEEPGRAM_MODEL", "flux-general-multi")
     monkeypatch.setattr("sys.argv", ["voice", "--llm-backend", "ollama"])
 
     args = cli.parse_args()
 
     assert args.llm_backend == "ollama"
     assert args.ollama_model == "llama3"
-    assert args.deepgram_model == "flux-general-multi"
 
 
 def test_get_api_key_missing(monkeypatch):
