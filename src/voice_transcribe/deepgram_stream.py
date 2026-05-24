@@ -117,8 +117,8 @@ def run_push_to_talk_session(
                         if on_partial:
                             on_partial(text)
                     elif event == "EndOfTurn" and text:
-                        final_transcript = text
-                        _print_transcript(text)
+                        final_transcript = (final_transcript + " " + text).strip()
+                        _print_transcript(final_transcript)
             except Exception:
                 pass
 
