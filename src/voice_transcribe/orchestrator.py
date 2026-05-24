@@ -184,6 +184,7 @@ class Orchestrator:
 
     def _call_llm_with_repair(self) -> LLMProtocolResponse:
         prompt = self._build_prompt()
+        print(f"\n{'─' * 60}\n[PROMPT]\n{prompt}\n{'─' * 60}\n", flush=True)
         raw = run_llm_prompt(prompt, self._llm_backend, self._ollama_model)
 
         for attempt in range(_MAX_REPAIR_ATTEMPTS + 1):
