@@ -20,6 +20,29 @@ from voice_transcribe.protocol_models import AgentName, AgentStatus, NextAction,
 _GREEN = "\033[32m"
 _RESET = "\033[0m"
 _BOLD = "\033[1m"
+_DIM = "\033[2m"
+_CYAN = "\033[36m"
+_YELLOW = "\033[33m"
+
+_STATE_DESCRIPTIONS = {
+    "discussing":               "talking freely — no plan committed yet",
+    "confirming":               "LLM has a plan, waiting for your go-ahead",
+    "executing_agent":          "agent is running",
+    "resolving_agent_question": "agent needs your input to continue",
+    "completed":                "session done, saving transcript",
+}
+
+
+def _print_state_legend() -> None:
+    print(f"\n{_BOLD}Orchestrator states:{_RESET}")
+    for state, desc in _STATE_DESCRIPTIONS.items():
+        print(f"  {_CYAN}{state:<28}{_RESET}{_DIM}{desc}{_RESET}")
+    print()
+
+
+def _print_state(state: str) -> None:
+    desc = _STATE_DESCRIPTIONS.get(state, "")
+    print(f"  {_DIM}[state: {_CYAN}{state}{_RESET}{_DIM}  {desc}]{_RESET}", flush=True)
 
 
 def run(
@@ -75,7 +98,8 @@ def run(
 
     orch.register_agent(AgentName.DIAGRAM, _diagram_agent_fn)
 
-    print("\n  Starting conversation. Ctrl+C to exit.\n")
+    _print_state_legend()
+    print("  Starting conversation. Ctrl+C to exit.\n")
 
     while True:
         try:
@@ -110,6 +134,7 @@ def run(
             continue
 
         print(f"\n  {_BOLD}Assistant:{_RESET} {response.assistant_message}\n", flush=True)
+        _print_state(response.orchestrator.state.value)
 
         d = response.orchestrator
 
