@@ -16,7 +16,6 @@ def test_parse_args_defaults(monkeypatch):
 
     assert args.llm_backend == "claude"
     assert args.ollama_model == "qwen2.5:7b-instruct"
-    assert args.debug_protocol is False
 
 
 def test_parse_args_env_overrides(monkeypatch):

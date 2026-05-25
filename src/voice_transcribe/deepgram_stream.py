@@ -1,6 +1,6 @@
 """Deepgram streaming client for push-to-talk conversation sessions.
 
-Session boundaries are controlled by the user (SPACE to start, any key to stop).
+Session boundaries are controlled by the user (SPACE to start, SPACE to stop).
 Deepgram VAD/utterance-end detection is intentionally not used.
 
 Public entry point:
@@ -38,7 +38,7 @@ def run_push_to_talk_session(
 ) -> str:
     """Run one push-to-talk session.
 
-    Waits for SPACE to start, any key to stop.
+    Waits for SPACE to start, SPACE to stop.
     Streams mic audio to Deepgram, calls on_partial with live transcript updates.
     Returns the final transcript string, or empty string if nothing was spoken.
     """
@@ -72,8 +72,9 @@ def run_push_to_talk_session(
                     if ch == b"\x03":
                         os.kill(os.getpid(), signal.SIGINT)
                         return
-                    stop_event.set()
-                    return
+                    if ch == b" ":
+                        stop_event.set()
+                        return
         finally:
             termios.tcsetattr(fd, termios.TCSADRAIN, old)
 
@@ -125,7 +126,7 @@ def run_push_to_talk_session(
         recv_thread = threading.Thread(target=_receive_loop, daemon=True)
         recv_thread.start()
 
-        print("Press SPACE to start recording, any key to stop. Ctrl+C to quit.")
+        print("Press SPACE to start recording, SPACE again to stop. Ctrl+C to quit.")
         key_thread = threading.Thread(target=_key_listener, daemon=True)
         key_thread.start()
 

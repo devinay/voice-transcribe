@@ -8,16 +8,12 @@ version = "0.1.0"
 description = ""
 requires-python = ">=3.11"
 dependencies = [
-    "faster-whisper>=1.0.0",
     "torch>=2.0",
     "sounddevice>=0.4.6",
     "numpy>=1.24",
-    "transformers>=4.40",
-    "sentencepiece>=0.2",
     "lancedb>=0.6",
     "sentence-transformers>=2.7",
     "pandas>=2.0",
-    "torchaudio>=2.11.0",
     "rich>=13.0",
     "deepgram-sdk>=7.2.0",
     "python-dotenv>=1.2.2",

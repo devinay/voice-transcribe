@@ -1,48 +1,50 @@
-"""Single conversation-loop session runner.
+"""Markdown-centered conversation session runner.
 
-This is the new top-level entry point for the voice conversation. It:
-- runs one push-to-talk session per user turn (SPACE=start, any key=stop)
-- feeds the finalized transcript into the orchestrator
-- prints the assistant reply
-- dispatches agents when the orchestrator emits trigger_agent
-- handles agent suspend/resume through the same conversation loop
-- triggers process_and_save on completed
-
-Replaces the old loops/conversational.py clip-based UX.
+This loop keeps a live `session.md` artifact on disk as the durable base of the
+conversation. Only user speech is used to build that artifact. Agent/tool
+outputs are embedded back into the markdown as derived artifacts.
 """
 from __future__ import annotations
 
+import pathlib
+
+from rich.console import Console
+from rich.markdown import Markdown
+
+from voice_transcribe.agents import diagram as diagram_agent
 from voice_transcribe.deepgram_stream import run_push_to_talk_session
-from voice_transcribe.orchestrator import Orchestrator
-from voice_transcribe.protocol_models import AgentName, AgentStatus, NextAction, OrchestratorState
+from voice_transcribe.llm import run_llm_prompt
+from voice_transcribe.storage import (
+    finalize_session_artifact,
+    start_session_artifact,
+    update_session_artifact,
+)
 
-
-_GREEN = "\033[32m"
-_RESET = "\033[0m"
 _BOLD = "\033[1m"
+_RESET = "\033[0m"
 _DIM = "\033[2m"
-_CYAN = "\033[36m"
+_GREEN = "\033[32m"
 _YELLOW = "\033[33m"
 
-_STATE_DESCRIPTIONS = {
-    "discussing":               "talking freely — no plan committed yet",
-    "confirming":               "LLM has a plan, waiting for your go-ahead",
-    "executing_agent":          "agent is running",
-    "resolving_agent_question": "agent needs your input to continue",
-    "completed":                "session done, saving transcript",
-}
+_console = Console()
 
+_ASSISTANT_PROMPT = """You are helping the user iterate on a markdown session artifact.
 
-def _print_state_legend() -> None:
-    print(f"\n{_BOLD}Orchestrator states:{_RESET}")
-    for state, desc in _STATE_DESCRIPTIONS.items():
-        print(f"  {_CYAN}{state:<28}{_RESET}{_DIM}{desc}{_RESET}")
-    print()
+Rules:
+- The markdown is the durable base artifact and is built only from the user's spoken content.
+- Respond in plain text only.
+- Keep replies short and useful.
+- Ask at most one follow-up question at a time.
+- If a diagram or other follow-up action would help, suggest it plainly.
+- Do not output JSON, markdown fences, or tool syntax.
+- Do not restate the whole markdown back to the user.
 
+Current session markdown:
+{markdown}
 
-def _print_state(state: str) -> None:
-    desc = _STATE_DESCRIPTIONS.get(state, "")
-    print(f"  {_DIM}[state: {_CYAN}{state}{_RESET}{_DIM}  {desc}]{_RESET}", flush=True)
+Latest user turn:
+{user_turn}
+"""
 
 
 def run(
@@ -51,141 +53,159 @@ def run(
     llm_backend: str,
     ollama_model: str,
 ) -> None:
-    """Run the full conversation session until completion or Ctrl+C."""
-    from voice_transcribe import agents  # noqa: F401 — side-effect: loads agent package
-    from voice_transcribe.agents import diagram as diagram_agent
-    from voice_transcribe.protocol_models import ProtocolError
-    from voice_transcribe.storage import process_and_save
+    session_dir = start_session_artifact()
+    source_turns: list[str] = []
+    generated_artifacts: list[dict] = []
+    md_path = session_dir / "session.md"
 
-    orch = Orchestrator(llm_backend=llm_backend, ollama_model=ollama_model)
-
-    # Register diagram agent with the orchestrator result contract adapter
-    def _diagram_agent_fn(
-        agent_input: dict | None,
-        resume_context: dict | None,
-        user_answer: str | None,
-    ) -> dict:
-        import pathlib
-        from voice_transcribe.config import TRANSCRIPT_DIR
-
-        description = (agent_input or {}).get("description", "") or (resume_context or {}).get("description", "")
-        output_path = TRANSCRIPT_DIR / "tmp_diagram.png"
-
-        result = diagram_agent.run(
-            description=description,
-            output_path=pathlib.Path(output_path),
-            llm_backend=llm_backend,
-            ollama_model=ollama_model,
-        )
-        if result.get("success"):
-            return {
-                "status": "success",
-                "result": {
-                    "image_path": str(result.get("image_path", output_path)),
-                    "syntax": result.get("syntax", ""),
-                },
-                "error": None,
-                "question_for_user": None,
-                "resume_context": None,
-            }
-        return {
-            "status": "error",
-            "result": None,
-            "error": result.get("error", "unknown error"),
-            "question_for_user": None,
-            "resume_context": None,
-        }
-
-    orch.register_agent(AgentName.DIAGRAM, _diagram_agent_fn)
-
-    _print_state_legend()
-    print("  Starting conversation. Ctrl+C to exit.\n")
+    print("  Starting conversation. Ctrl+C to finalize and exit.\n")
+    print(f"  {_DIM}live session → {session_dir}{_RESET}\n", flush=True)
 
     while True:
         try:
-            # One push-to-talk turn
-            user_text = run_push_to_talk_session(
-                api_key=api_key,
-                model=deepgram_model,
-            )
+            user_text = run_push_to_talk_session(api_key=api_key, model=deepgram_model)
         except KeyboardInterrupt:
-            print("\n  (conversation ended)", flush=True)
+            final_dir = _finalize_session(session_dir, llm_backend, ollama_model)
+            _display_markdown(final_dir / f"{final_dir.name}.md")
+            print(f"\n  {_GREEN}Session saved →{_RESET} {final_dir}", flush=True)
             break
 
-        if not user_text.strip():
+        user_text = user_text.strip()
+        if not user_text:
             print("  (no speech detected)", flush=True)
             continue
 
         print(f"\n  You: {user_text}\n", flush=True)
 
-        # Check if we're resuming a suspended agent
-        if orch._state.conversation_state == OrchestratorState.RESOLVING_AGENT_QUESTION and orch._state.active_agent:
-            agent_result = orch.resume_agent(orch._state.active_agent, user_text)
-            _handle_agent_result(orch, agent_result, llm_backend, ollama_model)
-            continue
-
-        # Normal orchestrator turn
-        print("  Thinking...", flush=True)
-        try:
-            response = orch.turn(user_text)
-        except ProtocolError as exc:
-            print(f"\n  [error] protocol repair failed: {exc}", flush=True)
-            print("  Please restate your request.", flush=True)
-            continue
-
-        print(f"\n  {_BOLD}Assistant:{_RESET} {response.assistant_message}\n", flush=True)
-        _print_state(response.orchestrator.state.value)
-
-        d = response.orchestrator
-
-        if d.next_action == NextAction.COMPLETE or d.state == OrchestratorState.COMPLETED:
-            _do_completion(orch, llm_backend, ollama_model)
+        if _is_finish_request(user_text):
+            final_dir = _finalize_session(session_dir, llm_backend, ollama_model)
+            _display_markdown(final_dir / f"{final_dir.name}.md")
+            print(f"\n  {_GREEN}Session saved →{_RESET} {final_dir}", flush=True)
             break
 
-        if d.next_action == NextAction.TRIGGER_AGENT and d.agent_to_trigger:
-            agent_result = orch.dispatch_agent(d.agent_to_trigger, d.agent_input or {})
-            _handle_agent_result(orch, agent_result, llm_backend, ollama_model)
+        source_turns.append(user_text)
+        md_path = update_session_artifact(
+            session_dir=session_dir,
+            source_notes="\n\n".join(source_turns),
+            llm_backend=llm_backend,
+            ollama_model=ollama_model,
+            generated_artifacts=generated_artifacts,
+        )
 
-        # For discussing/confirming/resolving states, loop back for next user turn
+        if _is_diagram_request(user_text):
+            _handle_diagram_request(
+                session_dir=session_dir,
+                md_path=md_path,
+                user_text=user_text,
+                llm_backend=llm_backend,
+                ollama_model=ollama_model,
+                source_turns=source_turns,
+                generated_artifacts=generated_artifacts,
+            )
+            continue
 
-
-def _handle_agent_result(orch: Orchestrator, agent_result, llm_backend: str, ollama_model: str) -> None:
-    from voice_transcribe.protocol_models import ProtocolError
-
-    if agent_result.status == AgentStatus.SUCCESS:
-        orch._state.active_agent = None
-        # Feed result back into orchestrator as a system message
-        result_summary = f"Agent completed successfully. Result: {agent_result.result}"
-        try:
-            response = orch.turn(result_summary)
-            print(f"\n  {_BOLD}Assistant:{_RESET} {response.assistant_message}\n", flush=True)
-        except ProtocolError:
-            pass
-
-    elif agent_result.status == AgentStatus.ERROR:
-        print(f"\n  [agent error] {agent_result.error}", flush=True)
-        error_msg = f"Agent failed with error: {agent_result.error}"
-        try:
-            response = orch.turn(error_msg)
-            print(f"\n  {_BOLD}Assistant:{_RESET} {response.assistant_message}\n", flush=True)
-        except ProtocolError:
-            pass
-
-    elif agent_result.status == AgentStatus.NEEDS_INPUT:
-        orch.suspend_agent(orch._state.active_agent, agent_result)
-        print(f"\n  {_BOLD}Assistant:{_RESET} {agent_result.question_for_user}\n", flush=True)
+        assistant_message = _assistant_reply(md_path, user_text, llm_backend, ollama_model)
+        print(f"  {_BOLD}Assistant:{_RESET} {assistant_message}\n", flush=True)
 
 
-def _do_completion(orch: Orchestrator, llm_backend: str, ollama_model: str) -> None:
-    from voice_transcribe.storage import process_and_save
+def _assistant_reply(
+    md_path: pathlib.Path,
+    user_text: str,
+    llm_backend: str,
+    ollama_model: str,
+) -> str:
+    markdown = md_path.read_text() if md_path.exists() else ""
+    prompt = _ASSISTANT_PROMPT.format(markdown=markdown, user_turn=user_text)
+    return run_llm_prompt(prompt, llm_backend, ollama_model).strip()
 
-    history = orch._state.history
-    full_transcript = " ".join(
-        m["content"] for m in history if m["role"] == "user"
+
+def _handle_diagram_request(
+    session_dir: pathlib.Path,
+    md_path: pathlib.Path,
+    user_text: str,
+    llm_backend: str,
+    ollama_model: str,
+    source_turns: list[str],
+    generated_artifacts: list[dict],
+) -> None:
+    diagram_index = sum(1 for artifact in generated_artifacts if artifact.get("kind") == "diagram") + 1
+    output_path = session_dir / f"diagram_{diagram_index}.png"
+    description = _build_diagram_description(md_path, user_text)
+
+    print(f"  {_YELLOW}Generating diagram from session markdown...{_RESET}", flush=True)
+    result = diagram_agent.run(
+        description=description,
+        output_path=output_path,
+        llm_backend=llm_backend,
+        ollama_model=ollama_model,
     )
-    if full_transcript.strip():
-        print("\n  Processing and saving...", flush=True)
-        session_dir = process_and_save(full_transcript, llm_backend, ollama_model)
-        print(f"\n  Session saved → {session_dir}", flush=True)
-    else:
-        print("\n  (nothing to save)", flush=True)
+
+    if not result.get("success"):
+        print(f"  [diagram error] {result.get('error', 'unknown error')}", flush=True)
+        return
+
+    generated_artifacts.append(
+        {
+            "kind": "diagram",
+            "title": f"Diagram {diagram_index}",
+            "description": user_text,
+            "path": output_path.name,
+        }
+    )
+    updated_md = update_session_artifact(
+        session_dir=session_dir,
+        source_notes="\n\n".join(source_turns),
+        llm_backend=llm_backend,
+        ollama_model=ollama_model,
+        generated_artifacts=generated_artifacts,
+    )
+
+    print(f"  {_GREEN}Diagram saved →{_RESET} {output_path}", flush=True)
+    _display_markdown(updated_md)
+    print(
+        f"\n  {_BOLD}Assistant:{_RESET} I embedded the diagram into the session markdown. "
+        "If you want changes, describe the edit and mention the diagram in your next turn.\n",
+        flush=True,
+    )
+
+
+def _build_diagram_description(md_path: pathlib.Path, user_text: str) -> str:
+    markdown = md_path.read_text() if md_path.exists() else ""
+    return (
+        "Use the markdown session artifact below as the source of truth. "
+        "Create or update a diagram that matches the user's request.\n\n"
+        f"Session markdown:\n{markdown}\n\n"
+        f"User's latest diagram request:\n{user_text}\n"
+    )
+
+
+def _finalize_session(session_dir: pathlib.Path, llm_backend: str, ollama_model: str) -> pathlib.Path:
+    return finalize_session_artifact(session_dir, llm_backend, ollama_model)
+
+
+def _display_markdown(md_path: pathlib.Path) -> None:
+    if not md_path.exists():
+        return
+    print()
+    _console.rule("Session Markdown")
+    _console.print(Markdown(md_path.read_text()))
+    print()
+
+
+def _is_finish_request(user_text: str) -> bool:
+    lowered = user_text.lower()
+    finish_phrases = (
+        "finish this session",
+        "save and exit",
+        "save this",
+        "we're done",
+        "we are done",
+        "finalize this",
+    )
+    return any(phrase in lowered for phrase in finish_phrases)
+
+
+def _is_diagram_request(user_text: str) -> bool:
+    lowered = user_text.lower()
+    keywords = ("diagram", "draw", "visualize", "flowchart", "sequence diagram", "architecture diagram")
+    return any(keyword in lowered for keyword in keywords)

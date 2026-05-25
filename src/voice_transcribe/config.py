@@ -15,9 +15,6 @@ DEFAULT_OLLAMA_MODEL = "qwen2.5:7b-instruct"
 # Deepgram
 DEEPGRAM_API_KEY_ENV = "DEEPGRAM_API_KEY"
 
-# Protocol
-PROTOCOL_REPAIR_RETRIES = 2
-
 # Vector store (Phase 2)
 VECTOR_DB_DIR = pathlib.Path.home() / ".voice_transcribe" / "index.lancedb"
 LOG_FILE = pathlib.Path.home() / ".voice_transcribe" / "output.log"

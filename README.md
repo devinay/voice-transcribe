@@ -1,306 +1,246 @@
 # voice-transcribe
 
-A local, offline voice recorder with live Whisper transcription and LLM-powered post-processing.
+Voice-first notes with Deepgram streaming transcription, LLM-assisted markdown cleanup, local vector indexing, and optional D2 diagrams.
 
-- Press **SPACE** to start recording — words appear on screen as you speak
-- Press **any key** to stop
-- Review the transcript, correct it by speaking, or append another clip
-- On exit, the session is processed by an LLM into structured markdown and saved to `~/transcript/`
+## Current model
 
-Everything runs locally — no audio leaves your machine (unless you use the Claude CLI backend, which sends transcript text to Claude).
+The app now revolves around one durable session artifact:
 
-## Dependencies
+- `SPACE` starts one voice turn
+- `SPACE` again ends that turn
+- only the user's spoken content is written into the live `session.md`
+- the assistant replies in text
+- if you ask for a diagram, the diagram agent uses `session.md` as the source of truth
+- generated diagrams are embedded back into that same markdown file
 
-### System dependencies
+This keeps the session grounded in the user’s notes instead of in agent chatter or protocol state.
 
-**PortAudio** is required by `sounddevice` for microphone access.
+## Install
 
-macOS:
-```bash
-brew install portaudio
-```
-
-Ubuntu/Debian:
-```bash
-sudo apt install portaudio19-dev
-```
-
-**Python 3.11+** is required. Check your version with `python3 --version`.
-
----
-
-### LLM backend
-
-You need at least one of these:
-
-**Claude CLI** (default backend):
-```bash
-npm install -g @anthropic-ai/claude-code
-claude login
-```
-
-**Ollama** (fully local, used by `--default`):
-```bash
-# Install Ollama: https://ollama.com
-ollama pull qwen2.5:7b-instruct
-```
-
----
-
-### Python packages
-
-Clone the repo and install with [uv](https://github.com/astral-sh/uv) (recommended):
+From the repo root:
 
 ```bash
-git clone https://github.com/devinay/voice-transcribe.git
-cd voice-transcribe
+python -m venv .venv
+source .venv/bin/activate
 uv pip install -e .
 ```
 
-Or with pip:
+Required runtime dependencies:
+
+- Deepgram API key for STT
+- one LLM backend:
+  - Claude via `ANTHROPIC_API_KEY`
+  - OpenAI via `OPENAI_API_KEY`
+  - or local Ollama
+
+Optional:
+
+- `d2` for diagram rendering
+
+Install `d2` on macOS:
 
 ```bash
-git clone https://github.com/devinay/voice-transcribe.git
-cd voice-transcribe
-pip install -e .
+brew install d2
 ```
 
-This installs all dependencies including `lancedb` and `sentence-transformers`, and registers the `voice` and `voice-index` commands.
+## Environment
 
-On first run:
-- Whisper model weights (`medium.en`, ~1.5 GB) are downloaded automatically
-- The embedding model (`all-MiniLM-L6-v2`, ~80 MB) is downloaded on the first save
-
-> Note: `lancedb` bundles native binaries — first install may take a little longer than usual.
-
----
-
-### Optional: Apple Silicon (mlx-whisper)
-
-For faster transcription on Apple Silicon, install the `mlx-whisper` backend:
+Set Deepgram:
 
 ```bash
-uv pip install mlx-whisper
+export DEEPGRAM_API_KEY=your_key_here
 ```
 
-Then use it with:
+Choose one LLM path.
+
+### Claude
 
 ```bash
-voice --stt-backend mlx-whisper
+export ANTHROPIC_API_KEY=your_key_here
+voice --llm-backend claude
 ```
 
-### Optional: IBM Granite Speech
-
-To use the `granite-speech` backend (`ibm-granite/granite-speech-4.1-2b`), install `torchaudio`:
+### OpenAI
 
 ```bash
-uv add torchaudio
+export OPENAI_API_KEY=your_key_here
+voice --llm-backend openai
 ```
 
-Then use it with:
+### Ollama
+
+On a local 8 GB M1 MacBook Air, `qwen2.5:7b-instruct` is the most practical default right now.
 
 ```bash
-voice --stt-backend granite-speech
-```
-
-First run downloads ~4GB of model weights. On Apple Silicon the model runs on MPS (float16) automatically.
-
-## Running
-
-### With Ollama (recommended, fully local)
-
-`--default` uses Ollama for both correction and processing. Ollama must be running before you start:
-
-```bash
-# In a separate terminal (or as a background service):
 ollama serve
-
-# Then start a session:
-voice --default
+voice --llm-backend ollama --ollama-model qwen2.5:7b-instruct
 ```
 
-If Ollama is already running as a system service (e.g. installed via the macOS app), you can skip `ollama serve`.
+## Usage
 
-### With Claude CLI
-
-```bash
-voice --correction-backend claude --process-backend claude
-```
-
-Claude CLI handles its own authentication — no extra process needed.
-
-### Checking your configuration
-
-Running with no arguments prints the effective configuration (from env vars and built-in defaults) and exits:
+Show current config:
 
 ```bash
 voice
 ```
 
-To start a recording session, pass at least one argument. The `--default` flag applies the built-in preset and is the quickest way to get started:
+Start a session:
 
 ```bash
-voice --default
+voice --llm-backend claude
 ```
 
-`--default` sets these values, ignoring any environment variables:
+Controls:
 
-```
---stt-backend faster-whisper --whisper-model medium.en
---correction-backend ollama  --correction-ollama-model qwen2.5:7b-instruct
---process-backend ollama     --process-ollama-model qwen2.5:7b-instruct
-```
+- `SPACE` starts a turn
+- `SPACE` again ends that turn
+- `Ctrl+C` finalizes the session markdown and exits
 
-Or run as a module:
+You can also explicitly say things like:
 
-```bash
-python -m voice_transcribe.voice --default
-```
+- “save and exit”
+- “finish this session”
+- “draw a diagram for this”
+- “update the diagram to show the queue”
 
-### Controls
+## Session artifact
 
-| Key | Action |
-|-----|--------|
-| `SPACE` | Start recording |
-| any key | Stop recording |
-| `A` + Enter | Add chunk to session and record another |
-| `C` + Enter | Correct transcript by speaking instructions |
-| `X` + Enter | Finalize, process, and save |
+During a live session, the app maintains a live directory under:
 
-After 5 minutes of inactivity the session is saved automatically.
-
-## Models
-
-### Speech-to-text
-
-Three backends are supported, selectable via `--stt-backend`:
-
-| Backend | Default model | Notes |
-|---------|--------------|-------|
-| `faster-whisper` (default) | `medium.en` | Runs on CPU (int8) or GPU (float16) |
-| `mlx-whisper` | `mlx-community/whisper-small.en-mlx` | Apple Silicon only; install `mlx-whisper` separately |
-| `granite-speech` | `ibm-granite/granite-speech-4.1-2b` | Multilingual ASR with punctuation; MPS on Apple Silicon; requires `torchaudio`; ~4GB weights |
-
-### LLM processing
-
-Two backends are supported for correction and post-processing:
-
-| Backend | Notes |
-|---------|-------|
-| `claude` (default) | Uses the `claude` CLI |
-| `ollama` | Uses a locally running Ollama instance |
-
-Correction and processing can use different backends independently.
-
-## Output
-
-On exit, the full session transcript is processed by the LLM using the template in `process_prompt.md` and saved as a structured markdown file in `~/transcript/`. The filename is a 5-word summary generated by the LLM.
-
-The output document contains:
-- A title and 2–3 sentence summary
-- The original transcript (collapsible)
-- A cleaned, punctuated transcript broken into paragraphs
-- A next-actions checklist
-
-## CLI Options
-
-```
---default                         # apply built-in preset, ignoring env vars (see Usage above)
---stt-backend {faster-whisper,mlx-whisper,granite-speech}
---whisper-model MODEL_SIZE        # e.g. tiny, base, small, medium, large (default: medium.en)
---mlx-model MODEL_ID              # HuggingFace repo id for mlx-whisper
---granite-model MODEL_ID          # HuggingFace repo id for granite-speech (default: ibm-granite/granite-speech-4.1-2b)
---correction-backend {claude,ollama}
---process-backend {claude,ollama}
---correction-ollama-model MODEL
---process-ollama-model MODEL
+```text
+~/transcript/session_YYYYMMDD_HHMMSS/
 ```
 
-## Environment Variables
+Inside it:
 
-All CLI options can also be set via environment variables:
-
-| Variable | Default |
-|----------|---------|
-| `VOICE_STT_BACKEND` | `faster-whisper` |
-| `VOICE_WHISPER_MODEL` | `medium.en` |
-| `VOICE_MLX_MODEL` | `mlx-community/whisper-small.en-mlx` |
-| `VOICE_GRANITE_MODEL` | `ibm-granite/granite-speech-4.1-2b` |
-| `VOICE_LLM_BACKEND` | `claude` |
-| `VOICE_CORRECTION_BACKEND` | value of `VOICE_LLM_BACKEND` |
-| `VOICE_PROCESS_BACKEND` | value of `VOICE_LLM_BACKEND` |
-| `VOICE_OLLAMA_MODEL` | `qwen2.5:7b-instruct` |
-| `VOICE_CORRECTION_OLLAMA_MODEL` | value of `VOICE_OLLAMA_MODEL` |
-| `VOICE_PROCESS_OLLAMA_MODEL` | value of `VOICE_OLLAMA_MODEL` |
-
-## Code structure
-
+```text
+session.md
+diagram_1.png
+diagram_2.png
+...
 ```
-src/voice_transcribe/
-├── voice.py          # thin entrypoint — imports main from cli.py
-├── cli.py            # argument parsing, config display, backend setup, top-level orchestration
-├── audio.py          # recording, live streaming decode, display helpers
-├── stt.py            # STT backend loaders (faster-whisper, mlx-whisper, granite-speech)
-├── llm.py            # LLM backend runners (claude, ollama), correct_with_llm
-├── prompts.py        # process_prompt.md loading and template rendering
-├── storage.py        # process_and_save: LLM processing, file naming, save to ~/transcript/
-├── vector.py         # LanceDB vector index: embed summaries, assign similarity colors
-├── index_cmd.py      # voice-index CLI: backfill index for existing transcripts
-├── config.py         # all constants and default values
-├── loops/            # conversational loop plus generic agent loop
-├── agents/           # agent modules, including the diagram agent
-├── tools/            # external tool wrappers, including D2 rendering
-└── process_prompt.md # LLM prompt template for structured output
+
+When the session is finalized, that directory is renamed using an LLM-generated 5-word summary, for example:
+
+```text
+~/transcript/api_queue_rollout_notes/
+└── api_queue_rollout_notes.md
 ```
+
+## Markdown structure
+
+The markdown artifact is built from user speech and currently uses these sections:
+
+```md
+# Title
+
+## Summary
+
+## Source Notes
+
+## Processed Transcript
+
+## Actions / Follow-ups
+
+## Generated Artifacts
+```
+
+Important rule:
+
+- `Source Notes` come from the user’s spoken content only
+- generated diagrams and future tool results go under `Generated Artifacts`
+
+## Diagrams
+
+If your turn asks for a diagram, the app:
+
+1. reads the current `session.md`
+2. uses it as the diagram source of truth
+3. runs the D2 diagram agent
+4. saves the rendered image into the session directory
+5. embeds the image back into `session.md`
+6. displays the updated markdown
+
+This lets you iterate by speaking changes against the current artifact.
 
 ## Vector index
 
-After each save, the `## Summary` section of the transcript is embedded using `sentence-transformers/all-MiniLM-L6-v2` and stored in a local LanceDB index at `~/.voice_transcribe/index.lancedb`.
+After final save, the `## Summary` section is embedded and stored in a local LanceDB index.
 
-Each document is assigned a color from a 64-color palette. Documents with summary similarity ≥ 0.82 share a color; otherwise the least-used palette color is assigned. Colors are used in Phase 3 (Google Calendar events).
+Current embedding model:
 
-### Backfill existing transcripts
+- `sentence-transformers/all-MiniLM-L6-v2`
 
-To index transcripts that were saved before the vector index existed:
+Index location:
+
+```text
+~/.voice_transcribe/index.lancedb
+```
+
+Backfill old transcripts:
 
 ```bash
 voice-index
 ```
 
-To index a custom directory:
+## Code structure
 
-```bash
-voice-index --dir /path/to/transcripts
+```text
+src/voice_transcribe/
+├── voice.py                # thin entrypoint
+├── cli.py                  # args, startup validation, bootstrap
+├── deepgram_stream.py      # push-to-talk Deepgram streaming session
+├── audio.py                # terminal display helpers
+├── llm.py                  # Claude / OpenAI / Ollama runners
+├── prompts.py              # processing prompt loader
+├── process_prompt.md       # markdown build prompt
+├── storage.py              # live session artifact + finalize/index helpers
+├── vector.py               # LanceDB index
+├── index_cmd.py            # voice-index
+├── loops/
+│   ├── conversation_session.py   # markdown-centered live loop
+│   └── agent.py                  # generic intra-agent tool loop
+├── agents/
+│   └── diagram.py         # D2 diagram agent
+└── tools/
+    └── d2.py              # D2 renderer wrapper
 ```
 
 ## Tests
+
+Run:
 
 ```bash
 .venv/bin/pytest -q
 ```
 
-Current unit tests cover:
-- CLI argument defaults/preset behavior (`tests/test_cli.py`)
-- Prompt template substitution (`tests/test_prompts.py`)
-- Save/index flow wiring in `storage.process_and_save` (`tests/test_storage.py`)
+Current test coverage includes:
 
-## Roadmap Notes
+- CLI defaults and env handling
+- prompt loading
+- session artifact save/finalize behavior
+- vector indexing
+- backfill indexing command
 
-Current completed foundation:
-- Phase 1 refactor is done: the original monolith has been split into modules.
-- Phase 2 vector indexing is done: only the generated `Summary` is embedded and stored in LanceDB after each save.
-- Phase 3 diagram generation is done: transcripts are saved into per-session directories, diagrams can be suggested by the LLM, rendered with D2, refined, and embedded into the session output.
-- Similar documents share a persisted color chosen from a fixed internal palette of 64 colors.
+## Roadmap notes
 
-Current in-progress architectural direction:
-- `loops/conversational.py` and `loops/agent.py` both exist today.
-- The next structural step is to replace the old “two-loop” framing with a single conversation-loop orchestrator/state machine for discussion, confirmation, and agent execution.
+Completed:
 
-Next planned feature work:
-- Refactor the interaction model into one continuous conversation loop with internal states such as discussing, confirming, executing an agent, and resolving agent questions.
-- Reuse that same conversation model for future agent-triggered workflows instead of handing off to separate user-visible loops.
+- Phase 1 refactor
+- Phase 2 local vector indexing
+- Phase 3 diagram generation
+- Deepgram-only simplification
+- markdown-centered live session artifact
 
-Later planned workflow:
-- Google Drive snapshot sync for the vector store.
-- Optional Google Calendar event creation from `## Next Actions`.
-- Internal similarity colors will be mapped to the closest supported Google Calendar color where needed.
+Near-term direction:
+
+- keep the markdown file as the durable base of iteration
+- expand tool flows around that artifact
+- let future tools append structured results back into the same markdown
+
+Later ideas:
+
+- search across prior markdown sessions and related appointments
+- Drive sync for the vector snapshot
+- Calendar creation from action items
+- optional screen-context capture as a tool

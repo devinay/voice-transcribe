@@ -67,18 +67,12 @@ def parse_args() -> argparse.Namespace:
         "--llm-backend",
         choices=["claude", "ollama", "openai"],
         default=env_backend,
-        help="LLM backend for orchestration and processing.",
+        help="LLM backend for conversation and markdown generation.",
     )
     parser.add_argument(
         "--ollama-model",
         default=env_ollama_model,
         help="Ollama model to use when --llm-backend=ollama.",
-    )
-    parser.add_argument(
-        "--debug-protocol",
-        action="store_true",
-        default=False,
-        help="Print raw LLM protocol JSON to stderr for debugging.",
     )
     return parser.parse_args()
 
@@ -93,7 +87,6 @@ def _print_config(args: argparse.Namespace) -> None:
     print(f"  STT                Deepgram {_DEEPGRAM_MODEL}")
     print(f"  --llm-backend      {args.llm_backend}")
     print(f"  --ollama-model     {args.ollama_model}")
-    print(f"  --debug-protocol   {args.debug_protocol}")
     print()
     print("Environment variables:")
     print(f"  DEEPGRAM_API_KEY   {api_key_status}")
@@ -103,7 +96,7 @@ def _print_config(args: argparse.Namespace) -> None:
     print("Usage:")
     print("  voice --llm-backend claude         # start conversation (Claude LLM)")
     print("  voice --llm-backend ollama         # start conversation (Ollama LLM)")
-    print("  voice --debug-protocol --llm-backend claude  # show protocol JSON")
+    print("  voice --llm-backend openai         # start conversation (OpenAI LLM)")
     print()
     print("Run 'voice --help' for full option descriptions.")
 
@@ -128,6 +121,7 @@ def main() -> None:
     print(f"LLM: {args.llm_backend}", flush=True)
     if args.llm_backend == "ollama":
         print(f"Ollama model: {args.ollama_model}", flush=True)
+    print("Artifact: live session.md updated from user speech", flush=True)
 
     run_session(
         api_key=api_key,
